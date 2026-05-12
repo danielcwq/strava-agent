@@ -1,0 +1,30 @@
+# Fly.io config for morning-brief-agent.
+#
+# Run `fly launch --no-deploy` from this directory the first time — it will
+# add `app = ...` and `primary_region = ...` at the top. After that, normal
+# `fly deploy` uses this file as-is.
+
+[build]
+
+[[mounts]]
+  source = "data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # The receiver must be always-on so Garmin's morning push isn't missed.
+  auto_stop_machines = false
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"   # safe headroom for anthropic + gspread; downsize to 256mb if you want to test free-tier sizing

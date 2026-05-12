@@ -1,0 +1,22 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.DS_Store
+
+# Local-only secrets and state
+.env
+.env.*
+data/
+
+# Local-only files not needed at runtime
+scripts/
+garmin_documentation/
+README.md
+SETUP.md
+*.md
+!prompts/*.md

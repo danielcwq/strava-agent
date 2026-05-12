@@ -1,0 +1,46 @@
+# Secrets — never commit
+.env
+.env.local
+.env.*.local
+# Any JSON in the repo root (covers GCP service-account keys regardless of filename)
+/*.json
+# Plus the usual service-account name patterns anywhere in the tree
+**/*service-account*.json
+**/*service_account*.json
+**/gcp-key*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# SQLite
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Fly
+.fly/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+
+strava-agent-496105-5399e3d95269.json

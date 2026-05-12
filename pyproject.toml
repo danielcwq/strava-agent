@@ -1,0 +1,29 @@
+[project]
+name = "morning-brief-agent"
+version = "0.1.0"
+description = "Daily training brief: Garmin sleep + intervals.icu + Strava history -> Claude -> Telegram"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "httpx>=0.27",
+    "anthropic>=0.39",
+    "gspread>=6.1",
+    "google-auth>=2.35",
+    "python-dotenv>=1.0",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.3",
+    "ruff>=0.7",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
