@@ -1,4 +1,5 @@
-"""SQLite state: Garmin OAuth tokens and morning-brief dedup."""
+"""SQLite state: Garmin OAuth tokens, morning-brief dedup, and Garmin summary store."""
+import json
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -20,6 +21,18 @@ CREATE TABLE IF NOT EXISTS brief_log (
     calendar_date TEXT PRIMARY KEY,
     summary_id    TEXT NOT NULL,
     sent_at       INTEGER NOT NULL
+);
+
+-- Stores the latest Garmin push payload per (summary_type, calendar_date).
+-- Updates from Garmin for the same (type, date) overwrite — matches their
+-- "updated summary records" semantics where the freshest version wins.
+CREATE TABLE IF NOT EXISTS garmin_summaries (
+    summary_type  TEXT NOT NULL,
+    calendar_date TEXT NOT NULL,
+    summary_id    TEXT,
+    payload       TEXT NOT NULL,
+    received_at   INTEGER NOT NULL,
+    PRIMARY KEY (summary_type, calendar_date)
 );
 """
 
@@ -80,3 +93,44 @@ def mark_brief_sent(calendar_date: str, summary_id: str) -> None:
             "INSERT OR REPLACE INTO brief_log (calendar_date, summary_id, sent_at) VALUES (?, ?, ?)",
             (calendar_date, summary_id, int(time.time())),
         )
+
+
+def store_garmin_summary(
+    summary_type: str,
+    calendar_date: str,
+    payload: dict,
+    summary_id: str | None = None,
+) -> None:
+    """Upsert a Garmin summary payload by (type, date)."""
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO garmin_summaries (summary_type, calendar_date, summary_id, payload, received_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(summary_type, calendar_date) DO UPDATE SET
+                summary_id  = excluded.summary_id,
+                payload     = excluded.payload,
+                received_at = excluded.received_at
+            """,
+            (summary_type, calendar_date, summary_id, json.dumps(payload), int(time.time())),
+        )
+
+
+def get_garmin_summary(summary_type: str, calendar_date: str) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM garmin_summaries WHERE summary_type = ? AND calendar_date = ?",
+            (summary_type, calendar_date),
+        ).fetchone()
+    return json.loads(row["payload"]) if row else None
+
+
+def get_latest_garmin_summary(summary_type: str) -> dict | None:
+    """Return the most recent (by calendar_date) stored summary of the given type."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT payload FROM garmin_summaries "
+            "WHERE summary_type = ? ORDER BY calendar_date DESC LIMIT 1",
+            (summary_type,),
+        ).fetchone()
+    return json.loads(row["payload"]) if row else None

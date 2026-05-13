@@ -2,11 +2,14 @@
 
 Endpoints:
     GET  /health        — liveness check for Fly
-    POST /garmin/push   — Garmin sleep summary push; triggers morning brief
+    POST /garmin/push   — Garmin push notifications; triggers morning brief on sleeps
 
-The push handler must ack 200 within 30 seconds (Garmin counts >30s or non-2xx
-as failed and retries with backoff). Work is dispatched to a background task so
-the response is immediate.
+Garmin sends push payloads keyed by summary type (sleeps, dailies, userMetrics,
+hrv, stressDetails, etc.). We:
+  - Store every summary type in SQLite so later briefs can read recent values.
+  - Trigger the morning brief only on `sleeps` (one trigger per calendarDate).
+
+The handler must ack 200 within 30s; brief generation runs in a background task.
 """
 import logging
 
@@ -38,37 +41,49 @@ async def garmin_push(request: Request, background_tasks: BackgroundTasks) -> di
         logger.warning("invalid JSON on /garmin/push: %s", e)
         raise HTTPException(status_code=400, detail="invalid JSON")
 
-    sleeps = payload.get("sleeps") or []
-    other_keys = [k for k in payload.keys() if k != "sleeps"]
-    if other_keys:
-        # Garmin may push other summary types (dailies, userMetrics, etc.) if
-        # we subscribe to them. We accept the request but don't act on them in v0.
-        logger.info("ignoring non-sleep summary types in push: %s", other_keys)
+    received: dict[str, int] = {}
+    stored = 0
+    brief_dispatched = 0
 
-    accepted = 0
-    for entry in sleeps:
-        if _should_handle(entry):
-            calendar_date = entry["calendarDate"]
-            summary_id = entry.get("summaryId", "")
-            # Mark sent BEFORE dispatching so Garmin retries don't double-fire.
-            # Trade-off: if the background task fails, the brief is lost for the day.
-            db.mark_brief_sent(calendar_date, summary_id)
-            background_tasks.add_task(_run_brief_safely, entry)
-            accepted += 1
+    for summary_type, entries in payload.items():
+        if not isinstance(entries, list):
+            logger.info("ignoring non-list payload key: %s", summary_type)
+            continue
+        received[summary_type] = len(entries)
+        for entry in entries:
+            calendar_date = entry.get("calendarDate")
+            if not calendar_date:
+                logger.warning("%s entry missing calendarDate, skipping", summary_type)
+                continue
 
-    return {"accepted_sleeps": accepted, "received_sleeps": len(sleeps)}
+            db.store_garmin_summary(
+                summary_type=summary_type,
+                calendar_date=calendar_date,
+                payload=entry,
+                summary_id=entry.get("summaryId"),
+            )
+            stored += 1
+
+            if summary_type == "sleeps" and _should_trigger_brief(entry):
+                db.mark_brief_sent(calendar_date, entry.get("summaryId", ""))
+                background_tasks.add_task(_run_brief_safely, entry)
+                brief_dispatched += 1
+
+    return {
+        "received": received,
+        "stored": stored,
+        "brief_dispatched": brief_dispatched,
+    }
 
 
-def _should_handle(entry: dict) -> bool:
-    calendar_date = entry.get("calendarDate")
-    if not calendar_date:
-        logger.warning("sleep entry missing calendarDate, skipping")
-        return False
+def _should_trigger_brief(entry: dict) -> bool:
+    """Brief fires once per (userId, calendarDate). Updates and replays are ignored."""
+    calendar_date = entry["calendarDate"]
 
     tokens = db.get_tokens()
     if tokens and entry.get("userId") and entry["userId"] != tokens["user_id"]:
         logger.warning(
-            "push userId %s does not match our user_id %s; skipping",
+            "sleep push userId %s does not match stored user_id %s; skipping brief",
             entry.get("userId"),
             tokens["user_id"],
         )
