@@ -12,6 +12,7 @@ hrv, stressDetails, etc.). We:
 The handler must ack 200 within 30s; brief generation runs in a background task.
 """
 import logging
+import random
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
@@ -21,6 +22,21 @@ from src.config import settings
 from src.conversation import handle_message as handle_chat_message
 from src.pipeline import morning_brief
 from src.telegram_commands import dispatch as dispatch_command
+
+# Short status messages the bot fires immediately on inbound non-slash text, so the
+# user sees activity within ~200ms instead of waiting 5–30s for Claude to respond.
+_LOADING_PHRASES = (
+    "Thinking...",
+    "Pondering...",
+    "Loading...",
+    "On it...",
+    "Just a sec...",
+    "Looking it up...",
+    "Crunching numbers...",
+    "Cogitating...",
+    "Hmm...",
+    "Reading your data...",
+)
 
 logging.basicConfig(
     level=settings.log_level,
@@ -147,14 +163,27 @@ async def telegram_webhook(
 
     result = dispatch_command(text, chat_id=chat_id, message_id=message.get("message_id", 0))
     if result is None:
-        # Not a slash command — route through Claude with tool use.
+        # Non-slash chat: send a loading message immediately so the user sees activity,
+        # then dispatch the (slow) Claude call as a background task so the webhook
+        # returns 200 fast (avoids Telegram's webhook timeout).
         try:
-            reply = handle_chat_message(chat_id, text)
-        except Exception as e:
-            logger.exception("conversation handler failed")
-            reply = f"error: {type(e).__name__}: {e}"
-        telegram.send_message(reply, parse_mode="Markdown")
-        return {"ok": True, "replied": True, "via": "chat"}
+            telegram.send_message(random.choice(_LOADING_PHRASES), parse_mode=None)
+        except Exception:
+            logger.exception("failed to send loading message; proceeding")
+        background_tasks.add_task(_run_chat_safely, chat_id, text)
+        return {"ok": True, "replied": True, "via": "chat-scheduled"}
 
     telegram.send_message(result.text, parse_mode=result.parse_mode)
     return {"ok": True, "replied": True, "via": "command"}
+
+
+def _run_chat_safely(chat_id: str, user_text: str) -> None:
+    try:
+        reply = handle_chat_message(chat_id, user_text)
+    except Exception as e:
+        logger.exception("conversation handler failed for chat=%s", chat_id)
+        reply = f"error: {type(e).__name__}: {e}"
+    try:
+        telegram.send_message(reply, parse_mode="Markdown")
+    except Exception:
+        logger.exception("failed to send chat reply")
