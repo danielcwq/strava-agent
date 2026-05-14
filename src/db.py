@@ -37,6 +37,13 @@ CREATE TABLE IF NOT EXISTS garmin_summaries (
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply backward-compatible schema additions to pre-existing tables."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(brief_log)").fetchall()}
+    if "brief_json" not in cols:
+        conn.execute("ALTER TABLE brief_log ADD COLUMN brief_json TEXT")
+
+
 @contextmanager
 def get_conn() -> Iterator[sqlite3.Connection]:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
@@ -44,6 +51,7 @@ def get_conn() -> Iterator[sqlite3.Connection]:
     conn.row_factory = sqlite3.Row
     try:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
         yield conn
         conn.commit()
     finally:
@@ -93,6 +101,43 @@ def mark_brief_sent(calendar_date: str, summary_id: str) -> None:
             "INSERT OR REPLACE INTO brief_log (calendar_date, summary_id, sent_at) VALUES (?, ?, ?)",
             (calendar_date, summary_id, int(time.time())),
         )
+
+
+def record_brief_content(calendar_date: str, brief: dict) -> None:
+    """Persist the rendered brief JSON after successful delivery, so /last can show it.
+
+    Updates the existing brief_log row if present (normal path: mark_brief_sent ran first).
+    Inserts a new row if missing (e.g. /refresh, which bypasses the dedup mark).
+    """
+    payload = json.dumps(brief)
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE brief_log SET brief_json = ? WHERE calendar_date = ?",
+            (payload, calendar_date),
+        )
+        if cur.rowcount == 0:
+            conn.execute(
+                "INSERT INTO brief_log (calendar_date, summary_id, sent_at, brief_json) "
+                "VALUES (?, ?, ?, ?)",
+                (calendar_date, "manual", int(time.time()), payload),
+            )
+
+
+def get_last_brief() -> dict | None:
+    """Return the most recently sent brief along with its metadata, or None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT calendar_date, summary_id, sent_at, brief_json FROM brief_log "
+            "ORDER BY sent_at DESC LIMIT 1"
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "calendar_date": row["calendar_date"],
+        "summary_id": row["summary_id"],
+        "sent_at": row["sent_at"],
+        "brief": json.loads(row["brief_json"]) if row["brief_json"] else None,
+    }
 
 
 def store_garmin_summary(

@@ -13,11 +13,13 @@ The handler must ack 200 within 30s; brief generation runs in a background task.
 """
 import logging
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
 from src import db
+from src.clients import telegram
 from src.config import settings
 from src.pipeline import morning_brief
+from src.telegram_commands import dispatch as dispatch_command
 
 logging.basicConfig(
     level=settings.log_level,
@@ -104,3 +106,49 @@ def _run_brief_safely(sleep_entry: dict) -> None:
             "morning_brief failed for sleep summaryId=%s",
             sleep_entry.get("summaryId"),
         )
+
+
+@app.post("/telegram/webhook")
+async def telegram_webhook(
+    request: Request,
+    x_telegram_bot_api_secret_token: str | None = Header(default=None),
+) -> dict:
+    """Inbound Telegram webhook. Phase 5.0: echo-only.
+
+    Authenticates via Telegram's secret_token mechanism (set during setWebhook).
+    Drops messages from any chat_id other than the configured TELEGRAM_CHAT_ID,
+    so even if a stranger finds the bot, they can't make it respond.
+    """
+    if not settings.telegram_webhook_secret:
+        raise HTTPException(status_code=503, detail="webhook not configured")
+    if x_telegram_bot_api_secret_token != settings.telegram_webhook_secret:
+        logger.warning("/telegram/webhook bad secret token; rejected")
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    try:
+        update = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid json")
+
+    message = update.get("message")
+    if not message:
+        # We only handle text messages right now. Edits, callbacks, etc. ignored.
+        return {"ok": True, "skipped": "no message"}
+
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    if chat_id != str(settings.telegram_chat_id):
+        logger.warning("inbound from unauthorized chat_id=%s; ignoring", chat_id)
+        return {"ok": True, "skipped": "unauthorized chat_id"}
+
+    text = (message.get("text") or "").strip()
+    if not text:
+        return {"ok": True, "skipped": "empty text"}
+
+    result = dispatch_command(text, chat_id=chat_id, message_id=message.get("message_id", 0))
+    if result is None:
+        # Not a slash command — fall back to echo for now (Phase 5.2 will plug in Claude).
+        telegram.send_message(f"echo: {text}", parse_mode=None)
+        return {"ok": True, "replied": True, "via": "echo"}
+
+    telegram.send_message(result.text, parse_mode=result.parse_mode)
+    return {"ok": True, "replied": True, "via": "command"}

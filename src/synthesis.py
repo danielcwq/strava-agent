@@ -104,36 +104,45 @@ _WORKOUT_DATE_FORMATS = (
 )
 
 
-def _parse_workout_date(s: str) -> date | None:
+def _parse_workout_date(s: str, tz: ZoneInfo) -> date | None:
+    """Parse the Sheet's date column and return the date IN THE USER'S LOCAL TIMEZONE.
+
+    A run timestamp like `2026-05-12T06:30:00Z` (which is May 11 ~11:30pm in Pacific)
+    must report as May 11 locally, not May 12.
+    """
     if not s:
         return None
     s = s.strip()
     try:
-        # Handles ISO 8601 including trailing 'Z' UTC marker (Py 3.11+).
-        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=tz)
+        return dt.astimezone(tz).date()
     except ValueError:
         pass
     for fmt in _WORKOUT_DATE_FORMATS:
         try:
-            return datetime.strptime(s, fmt).date()
+            naive = datetime.strptime(s, fmt)
+            return naive.replace(tzinfo=tz).date()
         except ValueError:
             continue
     return None
 
 
-def _most_recent_run(workouts: list[dict], today: date) -> dict | None:
+def _most_recent_run(workouts: list[dict], today: date, tz: ZoneInfo) -> dict | None:
     """Sheet is newest-first, so workouts[0] is the most recent run.
 
-    Returns a summary with `days_ago` so Claude can decide if it's worth commenting on.
-    Includes lap-level detail for quality sessions.
+    Returns a summary with `days_ago` (in local days) so Claude can decide if it's
+    worth commenting on. Includes lap-level detail for quality sessions.
     """
     if not workouts:
         return None
     w = workouts[0]
-    parsed = _parse_workout_date(w.get("Workout Date / Time") or "")
+    parsed = _parse_workout_date(w.get("Workout Date / Time") or "", tz)
     summary = {
         "title": w.get("Workout Title"),
-        "date": w.get("Workout Date / Time"),
+        "date_raw": w.get("Workout Date / Time"),
+        "date_local": parsed.isoformat() if parsed else None,
         "days_ago": (today - parsed).days if parsed else None,
         "moving_time": w.get("Moving Time"),
         "distance": w.get("Total Distance"),
@@ -250,7 +259,9 @@ def _seconds_to_minutes(s) -> int | None:
 
 def build_context(sleep_summary: dict | None = None) -> dict:
     """Gather all data sources into one dict for the Claude prompt."""
-    today = _today_local()
+    tz = ZoneInfo(settings.timezone)
+    now_local = datetime.now(tz)
+    today = now_local.date()
     today_iso = today.isoformat()
     yesterday_iso = (today - timedelta(days=1)).isoformat()
     wellness = intervals_icu.get_wellness(days_back=14)
@@ -261,8 +272,17 @@ def build_context(sleep_summary: dict | None = None) -> dict:
     user_metrics_latest = db.get_latest_garmin_summary("userMetrics")
 
     return {
-        "date": today_iso,
-        "timezone": settings.timezone,
+        "time": {
+            "now_local": now_local.isoformat(timespec="seconds"),
+            "now_utc": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "today_local": today_iso,
+            "yesterday_local": yesterday_iso,
+            "timezone": settings.timezone,
+            # Truthful if intervals.icu has today's wellness row already synced.
+            "wellness_today_synced": (today_w or {}).get("id") == today_iso,
+            # Truthful if Garmin Dailies for yesterday has arrived from the push.
+            "garmin_dailies_yesterday_received": dailies_yesterday is not None,
+        },
         "sleep_last_night": sleep_summary,
         "wellness": {
             "today": today_w,
@@ -273,7 +293,7 @@ def build_context(sleep_summary: dict | None = None) -> dict:
             "dailies_yesterday": _slim_dailies(dailies_yesterday),
             "user_metrics_latest": _slim_user_metrics(user_metrics_latest),
         },
-        "most_recent_run": _most_recent_run(workouts, today),
+        "most_recent_run": _most_recent_run(workouts, today, tz),
         "recent_runs": _summarize_workouts(workouts),
         "volume_stats": _aggregate_volume(workouts),
     }

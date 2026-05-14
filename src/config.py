@@ -16,6 +16,8 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str
     telegram_chat_id: str
+    # Optional: only required if the inbound /telegram/webhook is enabled.
+    telegram_webhook_secret: str | None = None
 
     anthropic_api_key: str
 
