@@ -34,6 +34,26 @@ CREATE TABLE IF NOT EXISTS garmin_summaries (
     received_at   INTEGER NOT NULL,
     PRIMARY KEY (summary_type, calendar_date)
 );
+
+-- One row per turn in a Telegram chat. `content` is JSON: either a plain string
+-- (for user turns) or a list of Anthropic content blocks (for assistant turns
+-- that include tool_use / tool_result for multi-turn fidelity).
+CREATE TABLE IF NOT EXISTS conversation_turns (
+    chat_id     TEXT NOT NULL,
+    turn_seq    INTEGER NOT NULL,
+    role        TEXT NOT NULL,   -- 'user' | 'assistant'
+    content     TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, turn_seq)
+);
+
+-- Daily token usage for the conversational tool-use loop, for soft cost capping.
+CREATE TABLE IF NOT EXISTS api_usage_daily (
+    day         TEXT PRIMARY KEY,    -- YYYY-MM-DD local
+    input_tok   INTEGER NOT NULL DEFAULT 0,
+    output_tok  INTEGER NOT NULL DEFAULT 0,
+    requests    INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -179,3 +199,83 @@ def get_latest_garmin_summary(summary_type: str) -> dict | None:
             (summary_type,),
         ).fetchone()
     return json.loads(row["payload"]) if row else None
+
+
+# === Conversation history (Phase 5.2) ===
+
+def append_conversation_turn(chat_id: str, role: str, content) -> None:
+    """Append a new turn. `content` may be str or a JSON-serializable list of blocks."""
+    payload = content if isinstance(content, str) else json.dumps(content, default=_block_default)
+    with get_conn() as conn:
+        next_seq = conn.execute(
+            "SELECT COALESCE(MAX(turn_seq), 0) + 1 FROM conversation_turns WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO conversation_turns (chat_id, turn_seq, role, content, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (chat_id, next_seq, role, payload, int(time.time())),
+        )
+
+
+def load_conversation_history(chat_id: str, max_turns: int = 20, max_age_seconds: int = 86400) -> list[dict]:
+    """Return last N turns within the time window, oldest-first, in Anthropic message format."""
+    cutoff = int(time.time()) - max_age_seconds
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT role, content FROM conversation_turns "
+            "WHERE chat_id = ? AND created_at >= ? "
+            "ORDER BY turn_seq DESC LIMIT ?",
+            (chat_id, cutoff, max_turns),
+        ).fetchall()
+    messages: list[dict] = []
+    for row in reversed(rows):
+        content_raw = row["content"]
+        # Assistant turns are JSON arrays of content blocks; user turns are plain strings.
+        try:
+            content = json.loads(content_raw)
+        except json.JSONDecodeError:
+            content = content_raw
+        messages.append({"role": row["role"], "content": content})
+    return messages
+
+
+def reset_conversation(chat_id: str) -> int:
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM conversation_turns WHERE chat_id = ?", (chat_id,))
+    return cur.rowcount
+
+
+def record_api_usage(day: str, input_tokens: int, output_tokens: int) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO api_usage_daily (day, input_tok, output_tok, requests)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT(day) DO UPDATE SET
+                input_tok  = input_tok + excluded.input_tok,
+                output_tok = output_tok + excluded.output_tok,
+                requests   = requests + 1
+            """,
+            (day, input_tokens, output_tokens),
+        )
+
+
+def get_api_usage(day: str) -> dict:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT input_tok, output_tok, requests FROM api_usage_daily WHERE day = ?",
+            (day,),
+        ).fetchone()
+    if not row:
+        return {"input_tok": 0, "output_tok": 0, "requests": 0}
+    return dict(row)
+
+
+def _block_default(o):
+    """JSON encoder fallback for Anthropic SDK content block objects."""
+    if hasattr(o, "model_dump"):
+        return o.model_dump()
+    if hasattr(o, "__dict__"):
+        return o.__dict__
+    raise TypeError(f"not serializable: {type(o)}")

@@ -18,6 +18,7 @@ from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from src import db
 from src.clients import telegram
 from src.config import settings
+from src.conversation import handle_message as handle_chat_message
 from src.pipeline import morning_brief
 from src.telegram_commands import dispatch as dispatch_command
 
@@ -146,9 +147,14 @@ async def telegram_webhook(
 
     result = dispatch_command(text, chat_id=chat_id, message_id=message.get("message_id", 0))
     if result is None:
-        # Not a slash command — fall back to echo for now (Phase 5.2 will plug in Claude).
-        telegram.send_message(f"echo: {text}", parse_mode=None)
-        return {"ok": True, "replied": True, "via": "echo"}
+        # Not a slash command — route through Claude with tool use.
+        try:
+            reply = handle_chat_message(chat_id, text)
+        except Exception as e:
+            logger.exception("conversation handler failed")
+            reply = f"error: {type(e).__name__}: {e}"
+        telegram.send_message(reply, parse_mode="Markdown")
+        return {"ok": True, "replied": True, "via": "chat"}
 
     telegram.send_message(result.text, parse_mode=result.parse_mode)
     return {"ok": True, "replied": True, "via": "command"}

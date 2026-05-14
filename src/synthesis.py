@@ -300,6 +300,12 @@ def build_context(sleep_summary: dict | None = None) -> dict:
 
 
 def synthesize_brief(sleep_summary: dict | None = None) -> dict:
-    """Build context, call Claude, return parsed {headline, body, flags}."""
+    """Build context, call Claude, return parsed {headline, body, flags}.
+
+    Project context (race goal, training philosophy) is included only on Mondays
+    in the user's local timezone — Monday's brief anchors the training week
+    without spamming race reminders on every other day.
+    """
     context = build_context(sleep_summary=sleep_summary)
-    return claude.synthesize(context)
+    is_monday = _today_local().weekday() == 0
+    return claude.synthesize(context, include_project_context=is_monday)

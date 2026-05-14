@@ -43,16 +43,33 @@ _BRIEF_TOOL = {
 }
 
 
-def load_system_prompt() -> str:
-    # Read fresh each call so prompt edits take effect without restart.
-    return (PROMPTS_DIR / "system.md").read_text()
+def load_system_prompt(include_project_context: bool = False) -> str:
+    """Read fresh each call so prompt edits take effect without restart.
+
+    When include_project_context is True, the project_context.md content is
+    appended to the system prompt. The morning brief sets this True only on
+    Mondays (start of the training week) so the runner isn't reminded of the
+    race goal every single day.
+    """
+    base = (PROMPTS_DIR / "system.md").read_text()
+    if include_project_context:
+        try:
+            ctx = (PROMPTS_DIR / "project_context.md").read_text()
+            return base + "\n\n---\n\n" + ctx
+        except FileNotFoundError:
+            pass
+    return base
 
 
-def synthesize(user_context: dict, model: str = MODEL) -> dict:
+def synthesize(user_context: dict, model: str = MODEL, include_project_context: bool = False) -> dict:
     """Call Claude and force it to call the deliver_morning_brief tool.
 
     Returns parsed args: {"headline": str, "body": str, "flags": list[str]}.
     Raises RuntimeError if the model fails to call the tool.
+
+    include_project_context: when True, the project_context.md is appended to
+    the system prompt. The caller (pipeline.morning_brief) sets this only on
+    Mondays.
     """
     user_message = (
         "Here is today's training data. Call deliver_morning_brief with the brief.\n\n"
@@ -61,7 +78,7 @@ def synthesize(user_context: dict, model: str = MODEL) -> dict:
     response = _client.messages.create(
         model=model,
         max_tokens=MAX_TOKENS,
-        system=load_system_prompt(),
+        system=load_system_prompt(include_project_context=include_project_context),
         tools=[_BRIEF_TOOL],
         tool_choice={"type": "tool", "name": "deliver_morning_brief"},
         messages=[{"role": "user", "content": user_message}],
