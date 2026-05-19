@@ -3,7 +3,7 @@ import statistics
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from src import db
+from src import db, training_config
 from src.clients import claude, google_sheets, intervals_icu
 from src.config import settings
 
@@ -68,23 +68,14 @@ def _summarize_workouts(workouts: list[dict]) -> list[dict]:
     return out
 
 
-def _aggregate_volume(workouts: list[dict]) -> dict:
-    if not workouts:
-        return {}
-    last_7 = workouts[:7]
-    distances = []
-    for w in last_7:
-        raw = w.get("Total Distance")
-        if raw in (None, ""):
-            continue
-        try:
-            distances.append(float(raw))
-        except (TypeError, ValueError):
-            continue
-    return {
-        "last_7d_count": len(last_7),
-        "last_7d_total_distance": round(sum(distances), 2) if distances else None,
-    }
+def _safe_float(raw) -> float | None:
+    """Parse a sheet cell to float, tolerating blanks and junk."""
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _today_wellness(wellness: list[dict], today_iso: str) -> dict | None:
@@ -257,6 +248,96 @@ def _seconds_to_minutes(s) -> int | None:
         return None
 
 
+def _calendar_volume(workouts: list[dict], today: date, tz: ZoneInfo) -> dict:
+    """Sum distance into trailing *calendar-day* windows.
+
+    Replaces the old _aggregate_volume, which summed the last 7 *rows* and
+    mislabelled it `last_7d`. The runner logs warmup / intervals / cooldown as
+    separate rows, so a row count is not a day count. `Total Distance` on the
+    sheet is in metres. `days_run` counts distinct calendar dates with at least
+    one logged activity.
+    """
+    windows = (7, 14, 28)
+    km = {w: 0.0 for w in windows}
+    dates: dict[int, set[date]] = {w: set() for w in windows}
+    for w in workouts:
+        d = _parse_workout_date(w.get("Workout Date / Time") or "", tz)
+        if d is None:
+            continue
+        age = (today - d).days
+        if age < 0:
+            continue
+        dist_m = _safe_float(w.get("Total Distance"))
+        for win in windows:
+            if age < win:
+                if dist_m is not None:
+                    km[win] += dist_m / 1000.0
+                dates[win].add(d)
+    return {
+        "km_last_7d": round(km[7], 1),
+        "km_last_14d": round(km[14], 1),
+        "km_last_28d": round(km[28], 1),
+        "days_run_last_7d": len(dates[7]),
+        "days_run_last_14d": len(dates[14]),
+        "note": "trailing calendar-day windows; distance summed from the sheet (m to km)",
+    }
+
+
+def _quality_recency(workouts: list[dict], today: date, tz: ZoneInfo) -> dict:
+    """Recency of quality work, measured by distinct calendar date.
+
+    A 'quality day' is any date with >=1 logged activity that looks like
+    intervals / tempo / track (see _is_quality_session). Counting dates, not
+    rows, is robust to one session being logged as several activities. This is a
+    heuristic — it can tag a session family, not judge how well it was executed.
+    """
+    quality_dates: set[date] = set()
+    for w in workouts:
+        d = _parse_workout_date(w.get("Workout Date / Time") or "", tz)
+        if d is None or (today - d).days < 0:
+            continue
+        if _is_quality_session(w):
+            quality_dates.add(d)
+    note = "heuristic — title / lap-pattern detection of interval/tempo/track work"
+    if not quality_dates:
+        return {
+            "days_since_last_quality": None,
+            "quality_days_last_7d": 0,
+            "quality_days_last_14d": 0,
+            "note": note,
+        }
+    last = max(quality_dates)
+    return {
+        "days_since_last_quality": (today - last).days,
+        "last_quality_date": last.isoformat(),
+        "quality_days_last_7d": sum((today - d).days < 7 for d in quality_dates),
+        "quality_days_last_14d": sum((today - d).days < 14 for d in quality_dates),
+        "note": note,
+    }
+
+
+def _build_training_snapshot(today: date, workouts: list[dict], tz: ZoneInfo) -> dict:
+    """The computed day-role / load context the agent decides against.
+
+    Deterministic and factual: it states the day's *role* and recent *load*; it
+    does not prescribe a workout. The decision logic lives in the prompt and in
+    prompts/training_principles.md.
+    """
+    role = training_config.day_role(today)
+    next_key, days_away = training_config.next_key_day(today)
+    return {
+        "weekday": today.strftime("%A"),
+        "today_role": role,
+        "today_role_detail": training_config.ROLE_DETAIL.get(role, role),
+        "next_key_day": {"weekday": next_key.strftime("%A"), "days_away": days_away},
+        "today_protects_next_key": role in ("support", "rest") and days_away == 1,
+        "phase": training_config.CURRENT_PHASE,
+        "days_to_race": training_config.days_to_race(today),
+        "volume": _calendar_volume(workouts, today, tz),
+        "quality": _quality_recency(workouts, today, tz),
+    }
+
+
 def build_context(sleep_summary: dict | None = None) -> dict:
     """Gather all data sources into one dict for the Claude prompt."""
     tz = ZoneInfo(settings.timezone)
@@ -265,7 +346,11 @@ def build_context(sleep_summary: dict | None = None) -> dict:
     today_iso = today.isoformat()
     yesterday_iso = (today - timedelta(days=1)).isoformat()
     wellness = intervals_icu.get_wellness(days_back=14)
-    workouts = google_sheets.get_recent_workouts(n=14)
+    # Wide fetch: the 28-day calendar-volume window needs many rows, since the
+    # runner logs each session as several activities. Same API cost — the client
+    # pulls the whole sheet and slices. Only `recent` is shown in the prompt.
+    all_workouts = google_sheets.get_recent_workouts(n=120)
+    recent = all_workouts[:14]
 
     today_w = _today_wellness(wellness, today_iso)
     dailies_yesterday = db.get_garmin_summary("dailies", yesterday_iso)
@@ -293,9 +378,9 @@ def build_context(sleep_summary: dict | None = None) -> dict:
             "dailies_yesterday": _slim_dailies(dailies_yesterday),
             "user_metrics_latest": _slim_user_metrics(user_metrics_latest),
         },
-        "most_recent_run": _most_recent_run(workouts, today, tz),
-        "recent_runs": _summarize_workouts(workouts),
-        "volume_stats": _aggregate_volume(workouts),
+        "training_snapshot": _build_training_snapshot(today, all_workouts, tz),
+        "most_recent_run": _most_recent_run(recent, today, tz),
+        "recent_runs": _summarize_workouts(recent),
     }
 
 
