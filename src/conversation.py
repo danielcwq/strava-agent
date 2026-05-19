@@ -165,6 +165,19 @@ TOOLS: list[dict] = [
 ]
 
 
+# Anthropic's server-side web search tool — Claude runs it itself (no _tool_*
+# function), we just declare it. web_search_20260209 also auto-enables code
+# execution for "dynamic filtering": Claude prunes search results before they
+# hit the context window — leaner token use, and free when paired with web
+# search. Lets the agent research training-science questions against live
+# sources, with citations.
+WEB_SEARCH_TOOL: dict = {
+    "type": "web_search_20260209",
+    "name": "web_search",
+    "max_uses": 5,
+}
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -383,7 +396,7 @@ def handle_message(chat_id: str, user_text: str) -> str:
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=_load_system_prompt(),
-            tools=TOOLS,
+            tools=TOOLS + [WEB_SEARCH_TOOL],
             messages=messages,
         )
         total_input += response.usage.input_tokens
@@ -410,6 +423,12 @@ def handle_message(chat_id: str, user_text: str) -> str:
             messages.append({"role": "user", "content": tool_results})
             continue
 
+        if response.stop_reason == "pause_turn":
+            # A server-tool turn (web search / code execution) paused mid-flight.
+            # The assistant content is already appended above — re-send so Claude
+            # resumes.
+            continue
+
         # max_tokens or other stop reasons — break with whatever text we have
         final_text = "".join(b.text for b in response.content if b.type == "text").strip()
         final_text = final_text or f"(stopped: {response.stop_reason})"
@@ -427,14 +446,28 @@ def handle_message(chat_id: str, user_text: str) -> str:
 
 def _block_to_dict(b) -> dict:
     """Convert an Anthropic SDK content block into a plain JSON-serializable dict
-    suitable for re-sending in a subsequent messages.create call."""
+    suitable for re-sending in a subsequent messages.create call.
+
+    Server-tool blocks from web search and code execution (server_tool_use,
+    web_search_tool_result, *_code_execution_tool_result) carry encrypted fields
+    — encrypted_content on results, encrypted_index on citations — that MUST
+    round-trip unchanged or citations break on later turns. Those go through
+    model_dump() whole; text blocks keep their citations too.
+    """
     if b.type == "text":
-        return {"type": "text", "text": b.text}
+        out: dict = {"type": "text", "text": b.text}
+        citations = getattr(b, "citations", None)
+        if citations:
+            out["citations"] = [
+                c.model_dump() if hasattr(c, "model_dump") else c for c in citations
+            ]
+        return out
     if b.type == "tool_use":
         return {"type": "tool_use", "id": b.id, "name": b.name, "input": b.input}
     if b.type == "tool_result":
         return {"type": "tool_result", "tool_use_id": b.tool_use_id, "content": b.content}
-    # Unknown block type — fall back to whatever the SDK gives
+    # server-tool blocks (web search, code execution) and any other block: keep
+    # the full SDK payload so encrypted_content / encrypted_index survive replay.
     if hasattr(b, "model_dump"):
         return b.model_dump()
     return {"type": "unknown"}
