@@ -128,6 +128,7 @@ def _run_brief_safely(sleep_entry: dict) -> None:
 @app.post("/telegram/webhook")
 async def telegram_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict:
     """Inbound Telegram webhook. Phase 5.0: echo-only.
