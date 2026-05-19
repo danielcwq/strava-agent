@@ -40,5 +40,12 @@ class Settings(BaseSettings):
     timezone: str = "America/Los_Angeles"
     log_level: str = "INFO"
 
+    # Daily token-spend ceilings for the Telegram chat agent — a runaway-bug
+    # backstop, not a hard budget. 0 = unlimited. Defaults sit far above any real
+    # use; tune (or zero out) via DAILY_INPUT_TOKEN_CAP / DAILY_OUTPUT_TOKEN_CAP
+    # env vars without a redeploy.
+    daily_input_token_cap: int = 10_000_000
+    daily_output_token_cap: int = 2_000_000
+
 
 settings = Settings()

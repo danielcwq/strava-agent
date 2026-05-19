@@ -272,6 +272,24 @@ def get_api_usage(day: str) -> dict:
     return dict(row)
 
 
+def get_api_usage_since(start_day: str) -> dict:
+    """Sum chat API usage from start_day (YYYY-MM-DD) through the latest row.
+
+    `day` is an ISO date string, so a lexical >= comparison is chronological.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT input_tok, output_tok, requests FROM api_usage_daily WHERE day >= ?",
+            (start_day,),
+        ).fetchall()
+    return {
+        "input_tok": sum(r["input_tok"] for r in rows),
+        "output_tok": sum(r["output_tok"] for r in rows),
+        "requests": sum(r["requests"] for r in rows),
+        "active_days": len(rows),
+    }
+
+
 def _block_default(o):
     """JSON encoder fallback for Anthropic SDK content block objects."""
     if hasattr(o, "model_dump"):

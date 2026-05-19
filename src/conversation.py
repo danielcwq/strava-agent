@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 2048
 MAX_TOOL_ITERATIONS = 6
-DAILY_INPUT_TOKEN_CAP = 1_000_000   # ~$3/day at sonnet pricing
-DAILY_OUTPUT_TOKEN_CAP = 200_000    # ~$3/day at sonnet pricing
 
 _client = Anthropic(api_key=settings.anthropic_api_key)
 
@@ -371,17 +369,26 @@ def _load_system_prompt() -> str:
 
 
 def _over_daily_cap() -> bool:
-    today = _today_iso()
-    u = db.get_api_usage(today)
-    return u["input_tok"] >= DAILY_INPUT_TOKEN_CAP or u["output_tok"] >= DAILY_OUTPUT_TOKEN_CAP
+    """True if today's chat token spend has reached either configured cap.
+
+    The caps are a runaway-bug backstop, not a budget (see config.Settings). A
+    cap of 0 means unlimited — that dimension is never enforced.
+    """
+    u = db.get_api_usage(_today_iso())
+    in_cap = settings.daily_input_token_cap
+    out_cap = settings.daily_output_token_cap
+    return bool(
+        (in_cap and u["input_tok"] >= in_cap)
+        or (out_cap and u["output_tok"] >= out_cap)
+    )
 
 
 def handle_message(chat_id: str, user_text: str) -> str:
     """Run a Claude tool-use loop for a single user message. Returns the reply text."""
     if _over_daily_cap():
         return (
-            "I've hit my daily API spend cap. Try again tomorrow, or bump the cap in "
-            "src/conversation.py."
+            "I've hit my daily API token cap. Try again tomorrow, or raise "
+            "DAILY_INPUT_TOKEN_CAP / DAILY_OUTPUT_TOKEN_CAP (0 = unlimited)."
         )
 
     history = db.load_conversation_history(chat_id)
