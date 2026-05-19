@@ -122,6 +122,46 @@ TOOLS: list[dict] = [
             "required": ["summary_type", "date"],
         },
     },
+    {
+        "name": "search_workouts",
+        "description": (
+            "Search the runner's FULL workout history from the Strava sheet — not just "
+            "recent runs. Use it to find past sessions by title keyword, type, or time "
+            "window: e.g. 'all the track sessions this block', 'when did I last do a "
+            "tempo', 'find my 3x2k'. Returns newest-first summaries (date, title, "
+            "distance, moving time, HR, is_quality); for lap-level detail on a specific "
+            "result, follow up with get_activity_detail for that date. The runner logs "
+            "warmup / intervals / cooldown as separate rows."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "Keyword(s) matched case-insensitively against the workout "
+                        "title; every word must appear. Optional."
+                    ),
+                },
+                "family": {
+                    "type": "string",
+                    "enum": ["quality", "easy", "all"],
+                    "description": (
+                        "Session-type filter. 'quality' = interval / tempo / track-type "
+                        "work (heuristic); 'easy' = everything else. Default 'all'."
+                    ),
+                },
+                "days_back": {
+                    "type": "integer",
+                    "description": "How many days back to scan. Default 120.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return (1-50). Default 20.",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -140,7 +180,9 @@ def _tool_get_activity_detail(date_str: str) -> dict:
     except ValueError:
         return {"error": f"invalid date '{date_str}', expected YYYY-MM-DD"}
 
-    rows = google_sheets.get_recent_workouts(n=30)
+    # Scan deep — search_workouts can surface old sessions, and a drill-in here
+    # must reach them, not just the last ~30 rows.
+    rows = google_sheets.get_recent_workouts(n=5000)
     matches: list[dict[str, Any]] = []
     for w in rows:
         parsed = _parse_workout_date(w.get("Workout Date / Time") or "", tz)
@@ -214,12 +256,74 @@ def _tool_get_garmin_summary(summary_type: str, date_str: str) -> dict:
     return data
 
 
+def _tool_search_workouts(
+    query: str | None = None,
+    family: str | None = None,
+    days_back: int = 120,
+    limit: int = 20,
+) -> dict:
+    """Search the full workout history by title keyword(s), family, and time window.
+
+    Scans the whole sheet — not just the recent rows the other tools see — so the
+    agent can answer 'what have I done across this block', not only 'last week'.
+    Returns newest-first summaries; `is_quality` flags interval/tempo/track work.
+    The runner logs warmup/intervals/cooldown as separate rows, so `quality`
+    naturally isolates the work rows while `easy`/`all` include every row.
+    """
+    tz = ZoneInfo(settings.timezone)
+    today = datetime.now(tz).date()
+    days_back = max(1, min(3650, int(days_back)))
+    limit = max(1, min(50, int(limit)))
+    cutoff = today - timedelta(days=days_back)
+
+    terms = (query or "").lower().split()
+    family = (family or "all").lower()
+
+    rows = google_sheets.get_recent_workouts(n=5000)  # whole sheet; the client slices
+    matches: list[dict[str, Any]] = []
+    for w in rows:
+        d = _parse_workout_date(w.get("Workout Date / Time") or "", tz)
+        if d is None or not (cutoff <= d <= today):
+            continue
+        title = w.get("Workout Title") or ""
+        if terms and not all(t in title.lower() for t in terms):
+            continue
+        quality = _is_quality_session(w)
+        if family == "quality" and not quality:
+            continue
+        if family == "easy" and quality:
+            continue
+        matches.append({
+            "date": d.isoformat(),
+            "title": title,
+            "distance": w.get("Total Distance"),
+            "moving_time": w.get("Moving Time"),
+            "avg_hr": w.get("Average HR"),
+            "is_quality": quality,
+        })
+
+    matches.sort(key=lambda m: m["date"], reverse=True)
+    return {
+        "query": query,
+        "family": family,
+        "days_back": days_back,
+        "total_matches": len(matches),
+        "workouts": matches[:limit],
+    }
+
+
 TOOL_FUNCS = {
     "get_activity_detail": lambda args: _tool_get_activity_detail(args["date"]),
     "get_recent_runs": lambda args: _tool_get_recent_runs(args.get("n", 7)),
     "get_wellness_window": lambda args: _tool_get_wellness_window(args.get("days_back", 14)),
     "get_last_brief": lambda args: _tool_get_last_brief(),
     "get_garmin_summary": lambda args: _tool_get_garmin_summary(args["summary_type"], args["date"]),
+    "search_workouts": lambda args: _tool_search_workouts(
+        query=args.get("query"),
+        family=args.get("family"),
+        days_back=args.get("days_back") or 120,
+        limit=args.get("limit") or 20,
+    ),
 }
 
 
