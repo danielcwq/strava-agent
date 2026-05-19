@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from anthropic import Anthropic
 
-from src import db
+from src import db, training_config
 from src.clients import google_sheets, intervals_icu
 from src.config import PROMPTS_DIR, settings
 from src.synthesis import _extract_laps, _is_quality_session, _parse_workout_date
@@ -239,14 +239,18 @@ def _execute_tool(name: str, args: dict) -> Any:
 # ---------------------------------------------------------------------------
 
 def _load_system_prompt() -> str:
-    """For chat mode, always include the project context — when the runner is
-    actively asking a question, they expect goal-aware answers."""
-    base = (PROMPTS_DIR / "conversation_system.md").read_text()
-    try:
-        ctx = (PROMPTS_DIR / "project_context.md").read_text()
-        return base + "\n\n---\n\n" + ctx
-    except FileNotFoundError:
-        return base
+    """Chat-mode system prompt, assembled fresh each call: base prompt + training
+    principles + project context, plus a dynamic one-liner naming today's date
+    and default day-role so the agent doesn't infer the weekly rhythm itself."""
+    parts = [(PROMPTS_DIR / "conversation_system.md").read_text()]
+    for name in ("training_principles.md", "project_context.md"):
+        try:
+            parts.append((PROMPTS_DIR / name).read_text())
+        except FileNotFoundError:
+            pass
+    today = datetime.now(ZoneInfo(settings.timezone)).date()
+    parts.append("# Today\n\n" + training_config.describe_today(today))
+    return "\n\n---\n\n".join(parts)
 
 
 def _over_daily_cap() -> bool:

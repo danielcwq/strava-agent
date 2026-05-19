@@ -43,22 +43,32 @@ _BRIEF_TOOL = {
 }
 
 
-def load_system_prompt(include_project_context: bool = False) -> str:
-    """Read fresh each call so prompt edits take effect without restart.
+def _read_prompt(name: str) -> str | None:
+    """Read an optional prompt file, returning None if it doesn't exist."""
+    try:
+        return (PROMPTS_DIR / name).read_text()
+    except FileNotFoundError:
+        return None
 
-    When include_project_context is True, the project_context.md content is
-    appended to the system prompt. The morning brief sets this True only on
-    Mondays (start of the training week) so the runner isn't reminded of the
-    race goal every single day.
+
+def load_system_prompt(include_project_context: bool = False) -> str:
+    """Assemble the system prompt fresh on every call so prompt edits take effect
+    without a restart.
+
+    training_principles.md (the stable decision layer — weekly rhythm, phase,
+    progression principles) is always included. project_context.md (race
+    narrative) is included only when include_project_context is True; the morning
+    brief sets that on Mondays so the race goal isn't repeated every day.
     """
-    base = (PROMPTS_DIR / "system.md").read_text()
+    parts = [(PROMPTS_DIR / "system.md").read_text()]
+    principles = _read_prompt("training_principles.md")
+    if principles:
+        parts.append(principles)
     if include_project_context:
-        try:
-            ctx = (PROMPTS_DIR / "project_context.md").read_text()
-            return base + "\n\n---\n\n" + ctx
-        except FileNotFoundError:
-            pass
-    return base
+        ctx = _read_prompt("project_context.md")
+        if ctx:
+            parts.append(ctx)
+    return "\n\n---\n\n".join(parts)
 
 
 def synthesize(user_context: dict, model: str = MODEL, include_project_context: bool = False) -> dict:
