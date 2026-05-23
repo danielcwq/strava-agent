@@ -29,9 +29,13 @@ from src.synthesis import _extract_laps, _is_quality_session, _parse_workout_dat
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-6"
-MAX_TOKENS = 2048
-MAX_TOOL_ITERATIONS = 6
+MODEL = "claude-opus-4-7"
+# Per-response output ceiling (API-required). 16k keeps us in safe non-streaming
+# territory; the SDK refuses larger non-streaming requests as a timeout guard.
+MAX_TOKENS = 16000
+# Runaway-bug backstop on the tool-use loop, not a budget. Claude self-terminates
+# via stop_reason="end_turn"; this only fires on genuine infinite loops.
+MAX_TOOL_ITERATIONS = 30
 
 _client = Anthropic(api_key=settings.anthropic_api_key)
 
@@ -402,6 +406,8 @@ def handle_message(chat_id: str, user_text: str) -> str:
         response = _client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "high"},
             system=_load_system_prompt(),
             tools=TOOLS + [WEB_SEARCH_TOOL],
             messages=messages,
