@@ -1,10 +1,12 @@
 """Build the prompt context from all data sources, call Claude, return the brief."""
 import statistics
+from contextlib import suppress
 from datetime import date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from src import db, training_config
-from src.clients import claude, google_sheets, intervals_icu
+from src.clients import claude, google_health, google_sheets, intervals_icu
 from src.config import settings
 
 QUALITY_KEYWORDS = ("interval", "tempo", "track", "x800", "x400", "x600",
@@ -29,9 +31,7 @@ def _is_quality_session(workout: dict) -> bool:
             speeds.append(float(raw))
         except (TypeError, ValueError):
             continue
-    if len(speeds) >= 4 and (max(speeds) - min(speeds)) > 0.5:
-        return True
-    return False
+    return len(speeds) >= 4 and (max(speeds) - min(speeds)) > 0.5
 
 
 def _extract_laps(workout: dict) -> list[dict]:
@@ -191,10 +191,8 @@ def _readiness_deltas(today_wellness: dict | None, trailing: list[dict]) -> dict
     rhr_today = today_wellness.get("restingHR")
     rhr_series = _series("restingHR")
     if rhr_today not in (None, "", 0) and rhr_series:
-        try:
+        with suppress(TypeError, ValueError):
             out["rhr_delta_bpm"] = round(float(rhr_today) - statistics.mean(rhr_series), 1)
-        except (TypeError, ValueError):
-            pass
 
     sleep_today = today_wellness.get("sleepSecs")
     sleep_series = _series("sleepSecs")
@@ -237,6 +235,323 @@ def _slim_user_metrics(d: dict | None) -> dict | None:
         "fitnessAge": d.get("fitnessAge"),
         "enhanced": d.get("enhanced"),
     }
+
+
+GOOGLE_HEALTH_DATA_TYPES = (
+    ("sleep", 5),
+    ("weight", 1),
+    ("body-fat", 1),
+    ("daily-heart-rate-variability", 3),
+    ("daily-resting-heart-rate", 3),
+    ("daily-oxygen-saturation", 3),
+    ("daily-respiratory-rate", 3),
+    ("steps", 3),
+    ("active-zone-minutes", 3),
+    ("exercise", 3),
+)
+
+
+def _int_or_none(raw: Any) -> int | None:
+    if raw in (None, ""):
+        return None
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(raw: Any) -> float | None:
+    if raw in (None, ""):
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_present(d: dict | None, keys: tuple[str, ...]) -> Any:
+    if not d:
+        return None
+    for key in keys:
+        value = d.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _civil_date(civil_datetime: dict | None) -> str | None:
+    if not civil_datetime:
+        return None
+    date_part = civil_datetime.get("date") or {}
+    year = date_part.get("year")
+    month = date_part.get("month")
+    day = date_part.get("day")
+    if not (year and month and day):
+        return None
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+
+def _civil_time(civil_datetime: dict | None) -> str | None:
+    if not civil_datetime:
+        return None
+    time_part = civil_datetime.get("time") or {}
+    hours = int(time_part.get("hours") or 0)
+    minutes = int(time_part.get("minutes") or 0)
+    seconds = int(time_part.get("seconds") or 0)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _local_datetime_parts(raw: str | None, tz: ZoneInfo) -> tuple[str | None, str | None]:
+    if not raw:
+        return None, None
+    with suppress(ValueError):
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(tz)
+        return dt.date().isoformat(), dt.time().isoformat(timespec="seconds")
+    return None, None
+
+
+def _duration_to_minutes(duration: str | None) -> int | None:
+    if not duration or not duration.endswith("s"):
+        return None
+    seconds = _float_or_none(duration[:-1])
+    if seconds is None:
+        return None
+    return round(seconds / 60)
+
+
+def _compact_google_health_value(value):
+    """Keep Google Health records prompt-sized without losing the source shape."""
+    if isinstance(value, dict):
+        return {k: _compact_google_health_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        limit = 8
+        out = [_compact_google_health_value(v) for v in value[:limit]]
+        if len(value) > limit:
+            out.append({"truncated_items": len(value) - limit})
+        return out
+    return value
+
+
+def _slim_google_health_record(record: dict) -> dict:
+    out = {}
+    for key, value in record.items():
+        if key == "name":
+            continue
+        out[key] = _compact_google_health_value(value)
+    return out
+
+
+def _google_health_sleep_filter(today: date) -> str:
+    tomorrow = (today + timedelta(days=1)).isoformat()
+    return (
+        f'sleep.interval.civil_end_time >= "{today.isoformat()}" '
+        f'AND sleep.interval.civil_end_time < "{tomorrow}"'
+    )
+
+
+def _normalize_google_health_sleep(record: dict | None) -> dict | None:
+    sleep = (record or {}).get("sleep")
+    if not sleep:
+        return None
+
+    interval = sleep.get("interval") or {}
+    summary = sleep.get("summary") or {}
+    metadata = sleep.get("metadata") or {}
+
+    stage_minutes = {}
+    for stage in summary.get("stagesSummary") or []:
+        stage_type = stage.get("type")
+        minutes = _int_or_none(stage.get("minutes"))
+        if stage_type and minutes is not None:
+            stage_minutes[stage_type] = minutes
+
+    start_civil = interval.get("civilStartTime")
+    end_civil = interval.get("civilEndTime")
+    tz = ZoneInfo(settings.timezone)
+    start_date_fallback, start_time_fallback = _local_datetime_parts(
+        interval.get("startTime"),
+        tz,
+    )
+    end_date_fallback, end_time_fallback = _local_datetime_parts(
+        interval.get("endTime"),
+        tz,
+    )
+    minutes_asleep = _int_or_none(summary.get("minutesAsleep"))
+    minutes_in_period = _int_or_none(summary.get("minutesInSleepPeriod"))
+    if minutes_in_period is None:
+        minutes_in_period = _duration_to_minutes(sleep.get("duration"))
+
+    return {
+        "source": "Google Health API (Fitbit)",
+        "end_date": _civil_date(end_civil) or end_date_fallback,
+        "start_date": _civil_date(start_civil) or start_date_fallback,
+        "start_time": _civil_time(start_civil) or start_time_fallback,
+        "end_time": _civil_time(end_civil) or end_time_fallback,
+        "start_time_utc": interval.get("startTime"),
+        "end_time_utc": interval.get("endTime"),
+        "minutes_asleep": minutes_asleep,
+        "minutes_in_sleep_period": minutes_in_period,
+        "minutes_awake": _int_or_none(summary.get("minutesAwake")),
+        "minutes_after_wake_up": _int_or_none(summary.get("minutesAfterWakeUp")),
+        "minutes_to_fall_asleep": _int_or_none(summary.get("minutesToFallAsleep")),
+        "stage_minutes": stage_minutes,
+        "sleep_type": sleep.get("type"),
+        "processed": metadata.get("processed"),
+        "nap": metadata.get("nap"),
+        "manually_edited": metadata.get("manuallyEdited"),
+        "stages_status": metadata.get("stagesStatus"),
+        "update_time": sleep.get("updateTime"),
+    }
+
+
+def _best_google_health_sleep(records: list[dict], today: date) -> dict | None:
+    normalized = [_normalize_google_health_sleep(record) for record in records]
+    sleeps = [record for record in normalized if record]
+    if not sleeps:
+        return None
+
+    today_iso = today.isoformat()
+    candidates = [record for record in sleeps if record.get("end_date") == today_iso]
+    if not candidates:
+        candidates = sleeps
+
+    def _sort_key(record: dict) -> tuple[int, int]:
+        return (
+            1 if record.get("nap") else 0,
+            -(record.get("minutes_asleep") or record.get("minutes_in_sleep_period") or 0),
+        )
+
+    return sorted(candidates, key=_sort_key)[0]
+
+
+def _google_health_context(today: date) -> dict:
+    """Fetch a compact Google Health snapshot for the brief.
+
+    This is a corroborating source, so failures are captured in-context instead
+    of failing the whole morning brief.
+    """
+    if not db.get_google_health_tokens():
+        return {
+            "available": False,
+            "reason": "tokens_missing",
+            "source": "Google Health API",
+        }
+
+    records: dict[str, list[dict]] = {}
+    errors: dict[str, dict] = {}
+    for data_type, page_size in GOOGLE_HEALTH_DATA_TYPES:
+        try:
+            filter_expr = _google_health_sleep_filter(today) if data_type == "sleep" else None
+            points = google_health.list_data_points(
+                data_type,
+                filter_expr=filter_expr,
+                page_size=page_size,
+            )
+        except Exception as exc:
+            errors[data_type] = {
+                "type": type(exc).__name__,
+                "message": str(exc)[:240],
+            }
+            continue
+        records[data_type] = [_slim_google_health_record(point) for point in points]
+
+    return {
+        "available": True,
+        "source": "Google Health API (Fitbit)",
+        "note": (
+            "secondary source; data appears only after Fitbit syncs to "
+            "Google Health"
+        ),
+        "sleep_last_night": _best_google_health_sleep(records.get("sleep", []), today),
+        "latest_records": records,
+        "errors": errors,
+    }
+
+
+def _normalize_intervals_sleep(today_wellness: dict | None) -> dict | None:
+    if not today_wellness:
+        return None
+    sleep_secs = _int_or_none(today_wellness.get("sleepSecs"))
+    score = _int_or_none(today_wellness.get("sleepScore"))
+    return {
+        "source": "intervals.icu",
+        "date": today_wellness.get("id"),
+        "minutes_asleep": round(sleep_secs / 60) if sleep_secs is not None else None,
+        "score": score,
+    }
+
+
+def _normalize_garmin_sleep(sleep_summary: dict | None) -> dict | None:
+    if not sleep_summary:
+        return None
+
+    sleep_seconds = _int_or_none(
+        _first_present(
+            sleep_summary,
+            (
+                "totalSleepTimeInSeconds",
+                "sleepTimeSeconds",
+                "sleepDurationInSeconds",
+                "durationInSeconds",
+            ),
+        )
+    )
+    score = _int_or_none(
+        _first_present(
+            sleep_summary,
+            ("overallSleepScore", "sleepScore", "sleepScoreFeedback"),
+        )
+    )
+    return {
+        "source": "Garmin webhook",
+        "calendarDate": sleep_summary.get("calendarDate"),
+        "minutes_asleep": round(sleep_seconds / 60) if sleep_seconds is not None else None,
+        "score": score,
+        "raw_keys_available": sorted(sleep_summary.keys()),
+    }
+
+
+def _sleep_source_comparison(
+    *,
+    sleep_summary: dict | None,
+    today_wellness: dict | None,
+    google_health_ctx: dict,
+) -> dict:
+    intervals_sleep = _normalize_intervals_sleep(today_wellness)
+    garmin_sleep = _normalize_garmin_sleep(sleep_summary)
+    google_sleep = google_health_ctx.get("sleep_last_night")
+
+    primary = intervals_sleep or garmin_sleep
+    comparison = {
+        "guidance": (
+            "Use Garmin/intervals sleep as the stat-line source when fresh. "
+            "Use Fitbit/Google Health to corroborate or flag disagreement, not "
+            "to override silently."
+        ),
+        "primary": primary,
+        "garmin_webhook": garmin_sleep,
+        "intervals_icu": intervals_sleep,
+        "google_health": google_sleep,
+        "conflict": False,
+        "difference_minutes": None,
+        "note": None,
+    }
+
+    primary_minutes = (primary or {}).get("minutes_asleep")
+    google_minutes = (google_sleep or {}).get("minutes_asleep")
+    if primary_minutes is None or google_minutes is None:
+        return comparison
+
+    diff = int(google_minutes) - int(primary_minutes)
+    threshold = max(45, int(primary_minutes * 0.2))
+    comparison["difference_minutes"] = diff
+    if abs(diff) >= threshold:
+        comparison["conflict"] = True
+        comparison["note"] = (
+            "Sleep sources materially disagree; mention the disagreement in "
+            "flags and avoid overstating certainty."
+        )
+    return comparison
 
 
 def _seconds_to_minutes(s) -> int | None:
@@ -355,6 +670,12 @@ def build_context(sleep_summary: dict | None = None) -> dict:
     today_w = _today_wellness(wellness, today_iso)
     dailies_yesterday = db.get_garmin_summary("dailies", yesterday_iso)
     user_metrics_latest = db.get_latest_garmin_summary("userMetrics")
+    google_health_ctx = _google_health_context(today)
+    source_comparison = _sleep_source_comparison(
+        sleep_summary=sleep_summary,
+        today_wellness=today_w,
+        google_health_ctx=google_health_ctx,
+    )
 
     return {
         "time": {
@@ -367,6 +688,7 @@ def build_context(sleep_summary: dict | None = None) -> dict:
             "wellness_today_synced": (today_w or {}).get("id") == today_iso,
             # Truthful if Garmin Dailies for yesterday has arrived from the push.
             "garmin_dailies_yesterday_received": dailies_yesterday is not None,
+            "google_health_available": google_health_ctx.get("available") is True,
         },
         "sleep_last_night": sleep_summary,
         "wellness": {
@@ -377,6 +699,10 @@ def build_context(sleep_summary: dict | None = None) -> dict:
         "garmin": {
             "dailies_yesterday": _slim_dailies(dailies_yesterday),
             "user_metrics_latest": _slim_user_metrics(user_metrics_latest),
+        },
+        "google_health": google_health_ctx,
+        "source_comparison": {
+            "sleep": source_comparison,
         },
         "training_snapshot": _build_training_snapshot(today, all_workouts, tz),
         "most_recent_run": _most_recent_run(recent, today, tz),

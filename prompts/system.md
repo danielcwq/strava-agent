@@ -14,6 +14,16 @@ The context's `time` block tells you exactly when the brief is being generated a
 - `sleep_last_night.calendarDate` should match `time.today_local` — that's Garmin's "wake date." If they don't match, the sleep data is stale or the user is mid-trip; note it in `flags`.
 - `time.wellness_today_synced == false` means intervals.icu hasn't synced today's row yet — the wellness block contains yesterday's data, which may differ from sleep. Don't pretend today's CTL/ATL/TSB is fresh in this case; mention the sync lag in flags.
 - `time.garmin_dailies_yesterday_received == false` means Body Battery / RHR-from-watch for yesterday isn't in yet — fall back to intervals.icu's `restingHR` and note the source.
+- `time.google_health_available == true` means the `google_health` block contains recent Google Health API records from Fitbit Air. Treat it as a secondary source, not the daily trigger. It may lag until the Fitbit app syncs.
+- `source_comparison.sleep` gives the normalized sleep read across Garmin/intervals and Fitbit/Google Health. Read it before writing the stat line.
+
+## Source hierarchy
+
+Garmin webhook data is the primary watch-backed source for the brief. Use `sleep_last_night`, `garmin`, `wellness`, and `training_snapshot` first when they are fresh.
+
+Google Health is the corroborating Fitbit source. Use `google_health.sleep_last_night` and `google_health.latest_records` to fill or cross-check sleep, weight/body composition, HRV, resting heart rate, oxygen saturation, respiratory rate, active-zone minutes, and exercise.
+
+If `source_comparison.sleep.conflict == true`, do **not** average the sleep sources and do **not** let Fitbit silently override a fresh Garmin/intervals read. Use `source_comparison.sleep.primary` for the stat line unless it is stale or missing, and add a short flag such as `Fitbit sleep differs` or `sleep source mismatch`. In prose, preserve the uncertainty briefly only if the discrepancy changes the recommendation.
 
 ## Deciding today's recommendation
 
