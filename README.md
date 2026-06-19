@@ -7,7 +7,8 @@ Watch wakes you ──► Garmin Connect ──► /garmin/push (this app)
                                        (full sleep JSON in POST body)
                                               │
                                               ├─► intervals.icu (CTL/ATL/TSB + today's plan)
-                                              └─► Google Sheets (past runs, lap-level)
+                                              ├─► Google Sheets (past runs, lap-level)
+                                              └─► Google Health API (Fitbit corroboration)
                                                        │
                                                        ▼
                                                    Claude
@@ -17,6 +18,8 @@ Watch wakes you ──► Garmin Connect ──► /garmin/push (this app)
 ```
 
 Garmin uses **OAuth 2.0 PKCE** and **Push** (full data in POST body, not Ping + callback). Access tokens expire every 24h and refresh tokens every ~90d; the app rotates both automatically in SQLite.
+
+Google Health uses **OAuth 2.0** for read-only Fitbit Air data. The brief treats it as a secondary source for sleep, weight, body composition, HRV, resting heart rate, oxygen saturation, respiratory rate, active-zone minutes, and exercise.
 
 ## Stack
 
@@ -59,6 +62,8 @@ strava-agent/
 │   ├── synthesis.py           # Build context → call Claude → parse response
 │   └── pipeline.py            # morning_brief() orchestrator
 └── scripts/
-    ├── bootstrap_garmin_oauth.py    # One-shot OAuth 1.0a flow (run once)
+    ├── bootstrap_garmin_oauth.py    # One-shot Garmin OAuth 2.0 PKCE flow
+    ├── bootstrap_google_health_oauth.py  # One-shot Google Health OAuth flow
+    ├── smoke_google_health.py       # Check Google Health data availability
     └── send_test_brief.py           # Fire the pipeline manually
 ```

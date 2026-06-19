@@ -119,6 +119,54 @@ Copy the output. Set `GOOGLE_SERVICE_ACCOUNT_JSON_B64=<paste>` in `.env`.
 
 **Then delete the downloaded JSON file** — the encoded version in `.env` is enough, and you don't want a duplicate of the secret floating around.
 
+### 4g. Enable Google Health API and create an OAuth client
+
+Use the same Google Cloud project as the Sheets API. This keeps the agent's Google credentials in one place.
+
+1. In [Google Cloud Console](https://console.cloud.google.com), select the same project.
+2. Left menu -> **APIs & Services** -> **Library**.
+3. Search for **Google Health API** -> click -> **Enable**.
+4. Go to **Google Auth Platform**:
+   - **Branding**: configure the consent screen. For a personal app, **External** + **Testing** is fine.
+   - **Audience**: add your own Gmail address as a test user. If you skip this, Google will block login with `Error 403: access_denied`.
+   - **Data Access**: add these read-only scopes:
+     - `https://www.googleapis.com/auth/googlehealth.sleep.readonly`
+     - `https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly`
+     - `https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly`
+5. Create an OAuth client:
+   - **Application type**: `Web application`
+   - **Name**: `morning-brief-google-health-local` (console-only; users do not see it)
+   - **Authorized redirect URI**: `http://localhost:8080/google-health/callback`
+6. Copy the client ID and client secret into `.env`:
+   ```bash
+   GOOGLE_HEALTH_CLIENT_ID=...
+   GOOGLE_HEALTH_CLIENT_SECRET=...
+   GOOGLE_HEALTH_REDIRECT_URI=http://localhost:8080/google-health/callback
+   ```
+
+Google Health user data from Fitbit Air cannot be read with an API key. It requires OAuth because the data belongs to your Google account and each scope needs user consent.
+
+### 4h. Get your Google Health tokens
+
+Run the one-shot local OAuth flow:
+
+```bash
+uv run scripts/bootstrap_google_health_oauth.py
+```
+
+What happens:
+1. Script opens Google's consent screen with the read-only Health scopes.
+2. You sign in with the Gmail account listed as a test user.
+3. Google redirects to `http://localhost:8080/google-health/callback`.
+4. The script exchanges the authorization code for an access token + refresh token.
+5. Tokens are written into local `data/state.db`, next to the Garmin tokens.
+
+Smoke-test that records are visible without printing health values:
+
+```bash
+uv run scripts/smoke_google_health.py
+```
+
 ---
 
 ## 5. Garmin Developer Portal app
@@ -182,7 +230,7 @@ You run this **once**, locally. The app rotates tokens in SQLite from there.
    ```bash
    fly secrets set $(grep -v '^#' .env | grep -v '^$' | xargs)
    ```
-3. Create a 1GB volume for SQLite (this is where Garmin tokens live, so the app can persist token rotations):
+3. Create a 1GB volume for SQLite (this is where OAuth tokens live, so the app can persist token rotations):
    ```bash
    fly volumes create data --size 1 --region <your-region>
    ```
@@ -190,7 +238,7 @@ You run this **once**, locally. The app rotates tokens in SQLite from there.
    ```bash
    fly deploy
    ```
-5. **Upload your bootstrapped Garmin tokens to the Fly volume.** The bootstrap script in step 6 wrote them to your local `data/state.db`; we now copy that file onto Fly:
+5. **Upload your bootstrapped OAuth tokens to the Fly volume.** The bootstrap scripts wrote them to your local `data/state.db`; we now copy that file onto Fly:
    ```bash
    fly ssh sftp shell
    sftp> put data/state.db /data/state.db
