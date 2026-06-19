@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     google_sheet_tab: str = "Sheet1"
     google_service_account_json_b64: str
 
+    # Google Health API OAuth 2.0 client. Tokens are seeded by
+    # scripts/bootstrap_google_health_oauth.py and stored in SQLite.
+    google_health_client_id: str | None = None
+    google_health_client_secret: str | None = None
+    google_health_redirect_uri: str = "http://localhost:8080/google-health/callback"
+
     # Garmin vars are optional during Phase A (test script runs without them).
     garmin_client_id: str | None = None
     garmin_client_secret: str | None = None

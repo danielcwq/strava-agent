@@ -17,6 +17,17 @@ CREATE TABLE IF NOT EXISTS garmin_tokens (
     updated_at    INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS google_health_tokens (
+    id                       INTEGER PRIMARY KEY CHECK (id = 1),
+    access_token             TEXT NOT NULL,
+    refresh_token            TEXT NOT NULL,
+    expires_at               INTEGER NOT NULL,
+    scopes                   TEXT,
+    token_type               TEXT,
+    refresh_token_expires_at INTEGER,
+    updated_at               INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS brief_log (
     calendar_date TEXT PRIMARY KEY,
     summary_id    TEXT NOT NULL,
@@ -104,6 +115,56 @@ def save_tokens(
                 updated_at    = excluded.updated_at
             """,
             (access_token, refresh_token, expires_at, user_id, int(time.time())),
+        )
+
+
+def get_google_health_tokens() -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM google_health_tokens WHERE id = 1").fetchone()
+        return dict(row) if row else None
+
+
+def save_google_health_tokens(
+    *,
+    access_token: str,
+    refresh_token: str,
+    expires_at: int,
+    scopes: str | None = None,
+    token_type: str | None = "Bearer",
+    refresh_token_expires_at: int | None = None,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO google_health_tokens (
+                id,
+                access_token,
+                refresh_token,
+                expires_at,
+                scopes,
+                token_type,
+                refresh_token_expires_at,
+                updated_at
+            )
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                access_token             = excluded.access_token,
+                refresh_token            = excluded.refresh_token,
+                expires_at               = excluded.expires_at,
+                scopes                   = excluded.scopes,
+                token_type               = excluded.token_type,
+                refresh_token_expires_at = excluded.refresh_token_expires_at,
+                updated_at               = excluded.updated_at
+            """,
+            (
+                access_token,
+                refresh_token,
+                expires_at,
+                scopes,
+                token_type,
+                refresh_token_expires_at,
+                int(time.time()),
+            ),
         )
 
 
