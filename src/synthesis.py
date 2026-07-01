@@ -437,6 +437,21 @@ def _google_health_context(today: date) -> dict:
             "source": "Google Health API",
         }
 
+    try:
+        google_health.get_access_token()
+    except google_health.GoogleHealthTokenExpired:
+        return {
+            "available": False,
+            "reason": "oauth_refresh_token_expired",
+            "source": "Google Health API",
+        }
+    except google_health.GoogleHealthAuthError:
+        return {
+            "available": False,
+            "reason": "oauth_unavailable",
+            "source": "Google Health API",
+        }
+
     records: dict[str, list[dict]] = {}
     errors: dict[str, dict] = {}
     for data_type, page_size in GOOGLE_HEALTH_DATA_TYPES:
@@ -447,10 +462,22 @@ def _google_health_context(today: date) -> dict:
                 filter_expr=filter_expr,
                 page_size=page_size,
             )
+        except google_health.GoogleHealthTokenExpired:
+            return {
+                "available": False,
+                "reason": "oauth_refresh_token_expired",
+                "source": "Google Health API",
+            }
+        except google_health.GoogleHealthAuthError:
+            return {
+                "available": False,
+                "reason": "oauth_unavailable",
+                "source": "Google Health API",
+            }
         except Exception as exc:
             errors[data_type] = {
                 "type": type(exc).__name__,
-                "message": str(exc)[:240],
+                "message": "request_failed",
             }
             continue
         records[data_type] = [_slim_google_health_record(point) for point in points]

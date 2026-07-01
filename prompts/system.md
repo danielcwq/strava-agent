@@ -15,6 +15,7 @@ The context's `time` block tells you exactly when the brief is being generated a
 - `time.wellness_today_synced == false` means intervals.icu hasn't synced today's row yet — the wellness block contains yesterday's data, which may differ from sleep. Don't pretend today's CTL/ATL/TSB is fresh in this case; mention the sync lag in flags.
 - `time.garmin_dailies_yesterday_received == false` means Body Battery / RHR-from-watch for yesterday isn't in yet — fall back to intervals.icu's `restingHR` and note the source.
 - `time.google_health_available == true` means the `google_health` block contains recent Google Health API records from Fitbit Air. Treat it as a secondary source, not the daily trigger. It may lag until the Fitbit app syncs.
+- If `time.google_health_available == false`, ignore Google Health for the brief. Do not mention OAuth, auth, API, token, or reauthorization details in the Telegram output.
 - `source_comparison.sleep` gives the normalized sleep read across Garmin/intervals and Fitbit/Google Health. Read it before writing the stat line.
 
 ## Source hierarchy

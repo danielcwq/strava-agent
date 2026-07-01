@@ -127,7 +127,7 @@ Use the same Google Cloud project as the Sheets API. This keeps the agent's Goog
 2. Left menu -> **APIs & Services** -> **Library**.
 3. Search for **Google Health API** -> click -> **Enable**.
 4. Go to **Google Auth Platform**:
-   - **Branding**: configure the consent screen. For a personal app, **External** + **Testing** is fine.
+   - **Branding**: configure the consent screen. For a personal app, **External** + **Testing** is enough to bootstrap, but Testing-mode refresh tokens expire after 7 days. For ongoing unattended morning briefs, move the app to **In production** once the consent screen is ready.
    - **Audience**: add your own Gmail address as a test user. If you skip this, Google will block login with `Error 403: access_denied`.
    - **Data Access**: add these read-only scopes:
      - `https://www.googleapis.com/auth/googlehealth.sleep.readonly`
@@ -145,6 +145,8 @@ Use the same Google Cloud project as the Sheets API. This keeps the agent's Goog
    ```
 
 Google Health user data from Fitbit Air cannot be read with an API key. It requires OAuth because the data belongs to your Google account and each scope needs user consent.
+
+> Google Health token caveat: while the OAuth consent screen is in **Testing**, Google issues time-limited refresh tokens. Expect to rerun the bootstrap weekly until the app is moved to **In production**.
 
 ### 4h. Get your Google Health tokens
 

@@ -21,8 +21,19 @@ class GoogleHealthAuthError(RuntimeError):
     pass
 
 
+class GoogleHealthTokenExpired(GoogleHealthAuthError):
+    pass
+
+
 class GoogleHealthApiError(RuntimeError):
     pass
+
+
+def _token_expired_message() -> str:
+    return (
+        "Google Health refresh token expired or was revoked; rerun "
+        "scripts/bootstrap_google_health_oauth.py and upload data/state.db to Fly"
+    )
 
 
 def _post_refresh(refresh_token: str) -> dict:
@@ -41,7 +52,14 @@ def _post_refresh(refresh_token: str) -> dict:
         timeout=15,
     )
     if response.status_code != 200:
-        raise GoogleHealthAuthError(f"refresh failed: {response.status_code} {response.text}")
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if body.get("error") == "invalid_grant":
+            raise GoogleHealthTokenExpired(_token_expired_message())
+        error = body.get("error") or f"HTTP {response.status_code}"
+        raise GoogleHealthAuthError(f"Google Health token refresh failed: {error}")
     return response.json()
 
 
@@ -57,8 +75,11 @@ def get_access_token() -> str:
     if tokens["expires_at"] - now > REFRESH_LEEWAY_SECONDS:
         return tokens["access_token"]
 
-    fresh = _post_refresh(tokens["refresh_token"])
     refresh_token_expires_at = tokens.get("refresh_token_expires_at")
+    if refresh_token_expires_at is not None and int(refresh_token_expires_at) <= now:
+        raise GoogleHealthTokenExpired(_token_expired_message())
+
+    fresh = _post_refresh(tokens["refresh_token"])
     if fresh.get("refresh_token_expires_in") is not None:
         refresh_token_expires_at = now + int(fresh["refresh_token_expires_in"])
 

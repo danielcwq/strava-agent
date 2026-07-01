@@ -42,6 +42,16 @@ def main() -> int:
     for data_type in DATA_TYPES:
         try:
             records = google_health.list_data_points(data_type, page_size=3)
+        except google_health.GoogleHealthTokenExpired as exc:
+            print(f"{data_type}: AUTH EXPIRED: {exc}")
+            print(
+                "\nRe-run scripts/bootstrap_google_health_oauth.py, "
+                "then upload data/state.db to Fly."
+            )
+            return 2
+        except google_health.GoogleHealthAuthError as exc:
+            print(f"{data_type}: AUTH ERROR: {exc}")
+            return 2
         except Exception as exc:
             failures += 1
             print(f"{data_type}: ERROR {type(exc).__name__}: {exc}")
