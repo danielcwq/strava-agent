@@ -2,8 +2,8 @@
 import json
 import sqlite3
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Iterator
 
 from src.config import settings
 
@@ -105,7 +105,9 @@ def save_tokens(
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO garmin_tokens (id, access_token, refresh_token, expires_at, user_id, updated_at)
+            INSERT INTO garmin_tokens (
+                id, access_token, refresh_token, expires_at, user_id, updated_at
+            )
             VALUES (1, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 access_token  = excluded.access_token,
@@ -179,7 +181,8 @@ def is_brief_sent(calendar_date: str) -> bool:
 def mark_brief_sent(calendar_date: str, summary_id: str) -> None:
     with get_conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO brief_log (calendar_date, summary_id, sent_at) VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO brief_log "
+            "(calendar_date, summary_id, sent_at) VALUES (?, ?, ?)",
             (calendar_date, summary_id, int(time.time())),
         )
 
@@ -231,7 +234,9 @@ def store_garmin_summary(
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO garmin_summaries (summary_type, calendar_date, summary_id, payload, received_at)
+            INSERT INTO garmin_summaries (
+                summary_type, calendar_date, summary_id, payload, received_at
+            )
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(summary_type, calendar_date) DO UPDATE SET
                 summary_id  = excluded.summary_id,
@@ -279,7 +284,11 @@ def append_conversation_turn(chat_id: str, role: str, content) -> None:
         )
 
 
-def load_conversation_history(chat_id: str, max_turns: int = 20, max_age_seconds: int = 86400) -> list[dict]:
+def load_conversation_history(
+    chat_id: str,
+    max_turns: int = 20,
+    max_age_seconds: int = 86400,
+) -> list[dict]:
     """Return last N turns within the time window, oldest-first, in Anthropic message format."""
     cutoff = int(time.time()) - max_age_seconds
     with get_conn() as conn:

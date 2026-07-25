@@ -1,6 +1,7 @@
 """/wellness — today's HRV / RHR / sleep numbers and deltas vs trailing baseline."""
+
 from src.clients import intervals_icu
-from src.synthesis import _readiness_deltas, _today_wellness, _today_local
+from src.synthesis import _readiness_deltas, _today_local, _today_wellness
 from src.telegram_commands.base import CommandContext, CommandResult, CommandSpec
 
 

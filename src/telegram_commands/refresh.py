@@ -3,6 +3,8 @@
 Bypasses dedup (no calendar-date guard). Uses the most recent sleep summary stored
 from Garmin pushes; falls back to no-sleep mode if none exists yet.
 """
+from contextlib import suppress
+
 from src import db
 from src.pipeline import format_for_telegram
 from src.synthesis import synthesize_brief
@@ -15,10 +17,8 @@ def handle(ctx: CommandContext) -> CommandResult:
     # Persist this as the "last brief" so /last reflects the refresh
     calendar_date = (sleep or {}).get("calendarDate")
     if calendar_date:
-        try:
+        with suppress(Exception):
             db.record_brief_content(calendar_date, brief)
-        except Exception:
-            pass  # non-fatal; the reply itself is the important thing
     return CommandResult(text=format_for_telegram(brief), parse_mode="Markdown")
 
 

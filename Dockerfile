@@ -12,6 +12,7 @@ RUN uv sync --no-dev
 # Application code (prompts/ ships so the system prompt is read at runtime)
 COPY src/ ./src/
 COPY prompts/ ./prompts/
+COPY config/training_profile.example.toml ./config/training_profile.example.toml
 
 ENV DATA_DIR=/data \
     PYTHONUNBUFFERED=1 \
@@ -20,4 +21,6 @@ ENV DATA_DIR=/data \
 
 EXPOSE 8080
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# The Garmin secret is embedded in the URL because Garmin cannot send a custom
+# auth header. Keep request paths out of application logs.
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log"]

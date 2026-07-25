@@ -1,0 +1,38 @@
+[training]
+current_phase = "base building"
+# Optional. Remove or leave blank when there is no target race.
+race_date = ""
+
+# Python weekday numbers: Monday=0 through Sunday=6.
+[weekly_roles]
+"0" = "support"
+"1" = "key"
+"2" = "support"
+"3" = "support"
+"4" = "support"
+"5" = "long"
+"6" = "rest"
+
+[role_detail]
+key = "key quality day"
+long = "long run day"
+support = "easy / support day"
+rest = "rest day"
+
+[prompts]
+training_principles = '''
+# Training Principles
+
+- Treat the weekly roles as defaults, not rigid commitments.
+- Let recovery data tune the intensity of the day's role.
+- Progress one training variable at a time.
+- Prefer controlled, repeatable work over chasing a single impressive session.
+'''
+
+project_context = '''
+# Project Context
+
+This is the public example profile. Copy this file to
+`config/training_profile.local.toml` and replace this section with the runner's
+goals, constraints, preferences, and relevant training history.
+'''

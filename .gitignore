@@ -29,6 +29,9 @@ build/
 *.sqlite3
 *.db-journal
 
+# Personal training context
+config/training_profile.local.toml
+
 # Fly
 .fly/
 
@@ -41,7 +44,4 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
-
-
-strava-agent-496105-5399e3d95269.json
 garmin_documentation/

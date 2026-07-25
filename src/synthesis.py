@@ -662,8 +662,8 @@ def _build_training_snapshot(today: date, workouts: list[dict], tz: ZoneInfo) ->
     """The computed day-role / load context the agent decides against.
 
     Deterministic and factual: it states the day's *role* and recent *load*; it
-    does not prescribe a workout. The decision logic lives in the prompt and in
-    prompts/training_principles.md.
+    does not prescribe a workout. The decision logic lives in the prompt and the
+    private training profile.
     """
     role = training_config.day_role(today)
     next_key, days_away = training_config.next_key_day(today)

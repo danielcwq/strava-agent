@@ -1,10 +1,11 @@
 """/units — quick reference for the metrics and their delta thresholds."""
-from src.telegram_commands.base import CommandContext, CommandResult, CommandSpec
 
+from src.telegram_commands.base import CommandContext, CommandResult, CommandSpec
 
 _TEXT = """*Wellness terminology*
 
-*HRV* — Heart Rate Variability (ms). Variation between consecutive heartbeats during sleep. Higher = better recovery.
+*HRV* — Heart Rate Variability (ms). Variation between consecutive heartbeats
+during sleep. Higher = better recovery.
 *RHR* — Resting Heart Rate (bpm). Heart rate at rest. Lower = fitter.
 *CTL* — Chronic Training Load (~42d fitness). Slow-moving; higher = fitter.
 *ATL* — Acute Training Load (~7d fatigue). Fast-moving; higher = more recent stress.
@@ -40,4 +41,8 @@ def handle(ctx: CommandContext) -> CommandResult:
     return CommandResult(text=_TEXT, parse_mode="Markdown")
 
 
-SPEC = CommandSpec(name="units", help="what the wellness metrics mean and when to care", handler=handle)
+SPEC = CommandSpec(
+    name="units",
+    help="what the wellness metrics mean and when to care",
+    handler=handle,
+)

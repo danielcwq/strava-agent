@@ -4,8 +4,8 @@ A command lives in its own file under src/telegram_commands/. Each file exports
 a single module-level `SPEC = CommandSpec(...)` and a `handle(ctx) -> str | CommandResult`
 function. The registry auto-discovers everything on import.
 """
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 
 @dataclass(frozen=True)

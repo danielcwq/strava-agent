@@ -12,6 +12,7 @@ __pycache__
 .env
 .env.*
 data/
+config/*.local.toml
 
 # Local-only files not needed at runtime
 scripts/

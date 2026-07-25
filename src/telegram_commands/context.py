@@ -1,16 +1,15 @@
-"""/context — show the project context file Claude reads for race-aware answers."""
-from src.config import PROMPTS_DIR
+"""/context — show the private project context Claude reads."""
+from src import training_config
 from src.telegram_commands.base import CommandContext, CommandResult, CommandSpec
 
 
 def handle(ctx: CommandContext) -> CommandResult:
-    path = PROMPTS_DIR / "project_context.md"
-    if not path.exists():
-        return CommandResult(text="no project_context.md is set")
-    body = path.read_text()
+    body = training_config.project_context()
+    if not body:
+        return CommandResult(text="no project context is set")
     # Telegram message cap is 4096 chars; truncate with a marker if longer.
     if len(body) > 3800:
-        body = body[:3800] + "\n\n…(truncated; edit prompts/project_context.md to update)"
+        body = body[:3800] + "\n\n…(truncated; edit the private training profile to update)"
     return CommandResult(text=body, parse_mode="Markdown")
 
 

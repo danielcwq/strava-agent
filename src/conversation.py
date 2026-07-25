@@ -16,7 +16,7 @@ Hard limits:
 """
 import json
 import logging
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -103,7 +103,8 @@ TOOLS: list[dict] = [
         "name": "get_last_brief",
         "description": (
             "Get the most recently delivered morning brief (headline, body, flags). "
-            "Use when the user asks 'what did the brief say', references 'this morning's brief', etc."
+            "Use when the user asks 'what did the brief say' or references "
+            "'this morning's brief'."
         ),
         "input_schema": {"type": "object", "properties": {}},
     },
@@ -361,15 +362,14 @@ def _load_system_prompt() -> str:
     """Chat-mode system prompt, assembled fresh each call: base prompt + training
     principles + project context, plus a dynamic one-liner naming today's date
     and default day-role so the agent doesn't infer the weekly rhythm itself."""
-    parts = [(PROMPTS_DIR / "conversation_system.md").read_text()]
-    for name in ("training_principles.md", "project_context.md"):
-        try:
-            parts.append((PROMPTS_DIR / name).read_text())
-        except FileNotFoundError:
-            pass
+    parts = [
+        (PROMPTS_DIR / "conversation_system.md").read_text(),
+        training_config.training_principles(),
+        training_config.project_context(),
+    ]
     today = datetime.now(ZoneInfo(settings.timezone)).date()
     parts.append("# Today\n\n" + training_config.describe_today(today))
-    return "\n\n---\n\n".join(parts)
+    return "\n\n---\n\n".join(part for part in parts if part)
 
 
 def _over_daily_cap() -> bool:
@@ -402,7 +402,7 @@ def handle_message(chat_id: str, user_text: str) -> str:
     total_output = 0
     final_text = ""
 
-    for iteration in range(MAX_TOOL_ITERATIONS):
+    for _iteration in range(MAX_TOOL_ITERATIONS):
         response = _client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,

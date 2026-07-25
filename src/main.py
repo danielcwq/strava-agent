@@ -2,7 +2,8 @@
 
 Endpoints:
     GET  /health        — liveness check for Fly
-    POST /garmin/push   — Garmin push notifications; triggers morning brief on sleeps
+    POST /garmin/push/{secret}
+                        — authenticated Garmin push; triggers a brief on sleeps
 
 Garmin sends push payloads keyed by summary type (sleeps, dailies, userMetrics,
 hrv, stressDetails, etc.). We:
@@ -11,8 +12,12 @@ hrv, stressDetails, etc.). We:
 
 The handler must ack 200 within 30s; brief generation runs in a background task.
 """
+import json
 import logging
 import random
+import re
+import secrets
+from datetime import date
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
@@ -46,34 +51,55 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="morning-brief-agent")
 
+_MAX_GARMIN_BODY_BYTES = 1_000_000
+_SUMMARY_TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+
 
 @app.get("/health")
 def health() -> dict:
     return {"ok": True}
 
 
-@app.post("/garmin/push")
-async def garmin_push(request: Request, background_tasks: BackgroundTasks) -> dict:
+@app.post("/garmin/push/{webhook_secret}")
+async def garmin_push(
+    webhook_secret: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    """Accept a single runner's Garmin payload only after complete validation."""
+    expected_secret = settings.garmin_webhook_secret
+    if not expected_secret:
+        logger.error("Garmin webhook is disabled: GARMIN_WEBHOOK_SECRET is not configured")
+        raise HTTPException(status_code=503, detail="webhook not configured")
+    if not secrets.compare_digest(webhook_secret, expected_secret):
+        raise HTTPException(status_code=404, detail="not found")
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > _MAX_GARMIN_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="payload too large")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid content-length") from None
+
+    raw_body = await request.body()
+    if len(raw_body) > _MAX_GARMIN_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="payload too large")
     try:
-        payload = await request.json()
-    except Exception as e:
-        logger.warning("invalid JSON on /garmin/push: %s", e)
-        raise HTTPException(status_code=400, detail="invalid JSON")
+        payload = json.loads(raw_body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail="invalid JSON") from None
+
+    validated = _validate_garmin_payload(payload)
 
     received: dict[str, int] = {}
     stored = 0
     brief_dispatched = 0
 
-    for summary_type, entries in payload.items():
-        if not isinstance(entries, list):
-            logger.info("ignoring non-list payload key: %s", summary_type)
-            continue
+    for summary_type, entries in validated.items():
         received[summary_type] = len(entries)
         for entry in entries:
-            calendar_date = entry.get("calendarDate")
-            if not calendar_date:
-                logger.warning("%s entry missing calendarDate, skipping", summary_type)
-                continue
+            calendar_date = entry["calendarDate"]
 
             db.store_garmin_summary(
                 summary_type=summary_type,
@@ -84,7 +110,7 @@ async def garmin_push(request: Request, background_tasks: BackgroundTasks) -> di
             stored += 1
 
             if summary_type == "sleeps" and _should_trigger_brief(entry):
-                db.mark_brief_sent(calendar_date, entry.get("summaryId", ""))
+                db.mark_brief_sent(calendar_date, entry.get("summaryId") or "")
                 background_tasks.add_task(_run_brief_safely, entry)
                 brief_dispatched += 1
 
@@ -95,18 +121,50 @@ async def garmin_push(request: Request, background_tasks: BackgroundTasks) -> di
     }
 
 
-def _should_trigger_brief(entry: dict) -> bool:
-    """Brief fires once per (userId, calendarDate). Updates and replays are ignored."""
-    calendar_date = entry["calendarDate"]
+def _validate_garmin_payload(payload: object) -> dict[str, list[dict]]:
+    """Validate the complete batch before any health data is persisted."""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
 
     tokens = db.get_tokens()
-    if tokens and entry.get("userId") and entry["userId"] != tokens["user_id"]:
-        logger.warning(
-            "sleep push userId %s does not match stored user_id %s; skipping brief",
-            entry.get("userId"),
-            tokens["user_id"],
-        )
-        return False
+    if not tokens:
+        raise HTTPException(status_code=503, detail="Garmin account not bootstrapped")
+    expected_user_id = str(tokens["user_id"])
+
+    validated: dict[str, list[dict]] = {}
+    for summary_type, entries in payload.items():
+        if not isinstance(summary_type, str) or not _SUMMARY_TYPE_RE.fullmatch(summary_type):
+            raise HTTPException(status_code=400, detail="invalid summary type")
+        if not isinstance(entries, list):
+            raise HTTPException(status_code=400, detail=f"{summary_type} must be a list")
+
+        valid_entries: list[dict] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise HTTPException(status_code=400, detail=f"invalid {summary_type} entry")
+
+            user_id = entry.get("userId")
+            if not isinstance(user_id, str) or not secrets.compare_digest(
+                user_id, expected_user_id
+            ):
+                logger.warning("rejected Garmin payload for an unauthorized or missing user")
+                raise HTTPException(status_code=403, detail="unauthorized Garmin user")
+
+            calendar_date = entry.get("calendarDate")
+            if not isinstance(calendar_date, str):
+                raise HTTPException(status_code=400, detail="missing calendarDate")
+            try:
+                date.fromisoformat(calendar_date)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="invalid calendarDate") from None
+            valid_entries.append(entry)
+        validated[summary_type] = valid_entries
+    return validated
+
+
+def _should_trigger_brief(entry: dict) -> bool:
+    """Brief fires once per calendar date. Updates and replays are ignored."""
+    calendar_date = entry["calendarDate"]
 
     if db.is_brief_sent(calendar_date):
         logger.info("brief already sent for %s; ignoring update", calendar_date)
@@ -146,7 +204,7 @@ async def telegram_webhook(
     try:
         update = await request.json()
     except Exception:
-        raise HTTPException(status_code=400, detail="invalid json")
+        raise HTTPException(status_code=400, detail="invalid json") from None
 
     message = update.get("message")
     if not message:

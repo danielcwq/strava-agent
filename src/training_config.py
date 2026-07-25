@@ -1,45 +1,73 @@
-"""Durable training config — the stable layer the agent reasons against.
-
-Encodes day-of-week *roles* (the defaults the runner usually follows) and current
-phase metadata. Deliberately small: dynamic state — recent sessions, readiness,
-accumulated load — is computed from data, never stored here.
-
-Day roles are *defaults*, not a fixed plan. The runner trains by feel; readiness
-and life legitimately shift a day. The prompt treats the role as a default to
-reason from, not a rule to enforce.
-
-Keep this in sync with prompts/training_principles.md — that file is the prose
-version Claude reads; this file is what the code computes against.
-"""
+"""Load the runner's private profile and expose deterministic training helpers."""
+import base64
+import binascii
+import tomllib
 from datetime import date, timedelta
 
-# --- Phase metadata --------------------------------------------------------
-CURRENT_PHASE = "half-marathon-specific build"
-RACE_DATE = date(2026, 7, 26)   # SF 2nd Half / City Half
+from src.config import CONFIG_DIR, REPO_ROOT, settings
 
-# --- Weekly rhythm ---------------------------------------------------------
-# Day roles, keyed by date.weekday() (Mon=0 … Sun=6). Defaults the runner usually
-# follows, not a fixed plan.
-#   key      — the week's quality session (usually CCSF track)
-#   long     — long run, often with steady/progression elements
-#   support  — easy running or off; absorbs load between hard days
-#   rest     — off
+EXAMPLE_PROFILE_PATH = CONFIG_DIR / "training_profile.example.toml"
+
+
+def _profile_bytes() -> tuple[bytes, str]:
+    encoded = settings.training_profile_toml_b64
+    if encoded:
+        try:
+            return base64.b64decode(encoded, validate=True), "TRAINING_PROFILE_TOML_B64"
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("TRAINING_PROFILE_TOML_B64 is not valid base64") from exc
+
+    path = settings.training_profile_path
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    if path.exists():
+        return path.read_bytes(), str(path)
+    return EXAMPLE_PROFILE_PATH.read_bytes(), str(EXAMPLE_PROFILE_PATH)
+
+
+def _load_profile() -> tuple[dict, str]:
+    raw, source = _profile_bytes()
+    try:
+        profile = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError(f"invalid training profile from {source}: {exc}") from exc
+
+    training = profile.get("training", {})
+    roles = profile.get("weekly_roles", {})
+    role_detail = profile.get("role_detail", {})
+    prompts = profile.get("prompts", {})
+    required_days = {str(day) for day in range(7)}
+    if set(roles) != required_days:
+        raise ValueError(f"{source}: weekly_roles must define string keys 0 through 6")
+    if not isinstance(training.get("current_phase"), str):
+        raise ValueError(f"{source}: training.current_phase must be a string")
+    if not isinstance(role_detail, dict) or not role_detail:
+        raise ValueError(f"{source}: role_detail must not be empty")
+    for key in ("training_principles", "project_context"):
+        if not isinstance(prompts.get(key), str):
+            raise ValueError(f"{source}: prompts.{key} must be a string")
+    return profile, source
+
+
+PROFILE, PROFILE_SOURCE = _load_profile()
+_TRAINING = PROFILE["training"]
+_PROMPTS = PROFILE["prompts"]
+
+CURRENT_PHASE: str = _TRAINING["current_phase"]
+_RACE_DATE_RAW = _TRAINING.get("race_date")
+RACE_DATE: date | None = date.fromisoformat(_RACE_DATE_RAW) if _RACE_DATE_RAW else None
 WEEKLY_ROLES: dict[int, str] = {
-    0: "support",   # Mon — protects Tuesday
-    1: "key",       # Tue — quality, usually CCSF track
-    2: "support",   # Wed
-    3: "support",   # Thu
-    4: "support",   # Fri
-    5: "long",      # Sat
-    6: "rest",      # Sun
+    int(day): role for day, role in PROFILE["weekly_roles"].items()
 }
+ROLE_DETAIL: dict[str, str] = dict(PROFILE["role_detail"])
 
-ROLE_DETAIL: dict[str, str] = {
-    "key": "key quality day (usually CCSF track)",
-    "long": "long run day",
-    "support": "easy / support day",
-    "rest": "rest day",
-}
+
+def training_principles() -> str:
+    return _PROMPTS["training_principles"].strip()
+
+
+def project_context() -> str:
+    return _PROMPTS["project_context"].strip()
 
 
 def day_role(d: date) -> str:
@@ -61,6 +89,8 @@ def next_key_day(d: date) -> tuple[date, int]:
 
 def days_to_race(d: date) -> int | None:
     """Whole days from `d` to race day; None once the race is in the past."""
+    if RACE_DATE is None:
+        return None
     delta = (RACE_DATE - d).days
     return delta if delta >= 0 else None
 

@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROMPTS_DIR = REPO_ROOT / "prompts"
+CONFIG_DIR = REPO_ROOT / "config"
 
 
 class Settings(BaseSettings):
@@ -38,6 +39,14 @@ class Settings(BaseSettings):
     garmin_client_id: str | None = None
     garmin_client_secret: str | None = None
     garmin_redirect_uri: str = "http://localhost:8080/callback"
+    # Required at runtime for /garmin/push/{secret}. If omitted, the endpoint
+    # remains disabled instead of accepting unauthenticated health payloads.
+    garmin_webhook_secret: str | None = None
+
+    # Personal coaching context. Local development reads the ignored TOML file;
+    # deployments can provide the same file as a base64-encoded secret.
+    training_profile_path: Path = CONFIG_DIR / "training_profile.local.toml"
+    training_profile_toml_b64: str | None = None
 
     # Where SQLite lives. Local default = ./data; on Fly, set DATA_DIR=/data via env
     # so it lands on the mounted volume.

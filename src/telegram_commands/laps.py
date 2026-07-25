@@ -61,4 +61,8 @@ def handle(ctx: CommandContext) -> CommandResult:
     return CommandResult(text="\n".join(lines), parse_mode="Markdown")
 
 
-SPEC = CommandSpec(name="laps", help="lap breakdown for a date (YYYY-MM-DD) or last run", handler=handle)
+SPEC = CommandSpec(
+    name="laps",
+    help="lap breakdown for a date (YYYY-MM-DD) or last run",
+    handler=handle,
+)

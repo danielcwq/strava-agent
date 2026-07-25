@@ -17,6 +17,28 @@ Estimated time: ~1–2 hours end to end.
 
 ---
 
+## 0. Create your private training profile
+
+Copy the public example into the ignored local path:
+
+```bash
+cp config/training_profile.example.toml config/training_profile.local.toml
+```
+
+Edit the local file with your current phase, optional race date, weekly roles,
+training principles, and project context. It is intentionally ignored by Git.
+
+Generate the secret used in the Garmin push URL and add it to `.env`:
+
+```bash
+openssl rand -hex 32
+```
+
+Set the output as `GARMIN_WEBHOOK_SECRET`. Do not reuse an API key or account
+password.
+
+---
+
 ## 1. Telegram bot
 
 (Easiest, do it first — gives you something to test against immediately.)
@@ -24,7 +46,7 @@ Estimated time: ~1–2 hours end to end.
 1. Open Telegram, search for **@BotFather**, start a chat.
 2. Send `/newbot`. Follow the prompts:
    - **Name**: anything (e.g. `Morning Brief`)
-   - **Username**: must end in `bot` (e.g. `dting_morning_brief_bot`)
+   - **Username**: must end in `bot` (e.g. `my_morning_brief_bot`)
 3. BotFather replies with a **bot token** like `1234567890:ABCdefGHIjkl...`. Copy it.
    - Set `TELEGRAM_BOT_TOKEN=...` in `.env`.
 4. In Telegram, find your new bot and send it any message (e.g. `hi`).
@@ -228,31 +250,38 @@ You run this **once**, locally. The app rotates tokens in SQLite from there.
    - Choose a region close to you (e.g. `sjc` for SF Bay Area, `lhr` for London).
    - **No** when asked about Postgres or Redis.
    - **No** when asked to deploy immediately — we need secrets and the volume first.
-2. Push every var from `.env` to Fly as secrets:
+2. Push the vars from `.env` to Fly using Fly's stdin-based secret
+   import so values are not split by shell expansion:
    ```bash
-   fly secrets set $(grep -v '^#' .env | grep -v '^$' | xargs)
+   fly secrets import < .env
    ```
-3. Create a 1GB volume for SQLite (this is where OAuth tokens live, so the app can persist token rotations):
+3. Encode the ignored training profile and set it as a Fly secret. Do this after
+   the import so the blank placeholder in `.env` cannot replace it:
+   ```bash
+   fly secrets set \
+     TRAINING_PROFILE_TOML_B64="$(base64 < config/training_profile.local.toml | tr -d '\n')"
+   ```
+4. Create a 1GB volume for SQLite (this is where OAuth tokens live, so the app can persist token rotations):
    ```bash
    fly volumes create data --size 1 --region <your-region>
    ```
-4. Deploy:
+5. Deploy:
    ```bash
    fly deploy
    ```
-5. **Upload your bootstrapped OAuth tokens to the Fly volume.** The bootstrap scripts wrote them to your local `data/state.db`; we now copy that file onto Fly:
+6. **Upload your bootstrapped OAuth tokens to the Fly volume.** The bootstrap scripts wrote them to your local `data/state.db`; we now copy that file onto Fly:
    ```bash
    fly ssh sftp shell
    sftp> put data/state.db /data/state.db
    sftp> quit
    fly apps restart           # so the app re-reads tokens
    ```
-6. Get your app's URL:
+7. Get your app's URL:
    ```bash
    fly status
    ```
-   Note the hostname (e.g. `https://morning-brief-dting.fly.dev`). You'll register this with Garmin next.
-7. Sanity check:
+   Note the hostname (e.g. `https://my-morning-brief.fly.dev`). You'll register this with Garmin next.
+8. Sanity check:
    ```bash
    curl https://<your-app>.fly.dev/health
    ```
@@ -266,11 +295,15 @@ We use Garmin's **Push** service rather than Ping — push delivers the full sle
 
 1. Open the Garmin **Endpoint Configuration Tool**: [apis.garmin.com/tools/endpoints](https://apis.garmin.com/tools/endpoints/). Sign in with your `GARMIN_CLIENT_ID` and `GARMIN_CLIENT_SECRET`.
 2. Find the **Sleep** summary type. Configure:
-   - **URL**: `https://<your-app>.fly.dev/garmin/push`
+   - **URL**: `https://<your-app>.fly.dev/garmin/push/<GARMIN_WEBHOOK_SECRET>`
    - **Type**: **Push** (not Ping)
    - **Enabled**: checked
 3. Save. Garmin may flag the new domain for a security review that auto-clears in 24–48h. If you need it sooner, email `connect-support@developer.garmin.com` to fast-track domain validation.
 4. **Optional but recommended:** also enable Push for `userMetrics` (HRV, VO2 max) and `dailies` (steps, resting HR, Body Battery) for richer brief context. The handler routes by summary type.
+
+> The secret is part of the URL because Garmin's endpoint tool does not provide
+> a custom authentication-header field. The handler also rejects entries whose
+> `userId` does not match the bootstrapped Garmin account.
 
 > The Push handler must respond `200` within 30 seconds or Garmin counts it as failed and retries with backoff. Heavy work (Claude call, intervals.icu fetch, Telegram send) runs asynchronously after the ack — we never block the response on it.
 
@@ -287,7 +320,7 @@ fly logs --since 1h
 ```
 
 Look for:
-- The incoming `POST /garmin/push` request — did Garmin actually fire?
+- The incoming `POST /garmin/push/<secret>` request — did Garmin actually fire?
 - Any errors fetching from intervals.icu or Sheets, or in the Claude synthesis.
 - The outbound Telegram call — did it return 200?
 
@@ -308,7 +341,7 @@ This fires the full synthesis + delivery using whatever data is currently in Gar
 | Garmin Endpoint Config shows security-review warning | Auto-clears in 24–48h; or email `connect-support@developer.garmin.com` to fast-track |
 | `403` on Sheets read | Service account not given Viewer access on the Sheet (step 4d) |
 | `401` on intervals.icu | Wrong API key, or athlete ID missing the `i` prefix |
-| `401` on Garmin API calls in logs | Access token expired and refresh failed — re-run `bootstrap_garmin_oauth.py` locally, then re-upload `data/state.db` to Fly via `fly ssh sftp` (step 7.5) |
+| `401` on Garmin API calls in logs | Access token expired and refresh failed — re-run `bootstrap_garmin_oauth.py` locally, then re-upload `data/state.db` to Fly via `fly ssh sftp` (deployment step 6) |
 | No push by 8am | Watch didn't sync — usually fixes itself once you open the Garmin Connect app on your phone |
 
 ---

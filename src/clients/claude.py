@@ -1,8 +1,9 @@
-"""Anthropic Claude client. Loads prompts/system.md fresh on every call."""
+"""Anthropic Claude client. Loads the public prompt and private profile context."""
 import json
 
 from anthropic import Anthropic
 
+from src import training_config
 from src.config import PROMPTS_DIR, settings
 
 MODEL = "claude-sonnet-4-6"
@@ -43,43 +44,36 @@ _BRIEF_TOOL = {
 }
 
 
-def _read_prompt(name: str) -> str | None:
-    """Read an optional prompt file, returning None if it doesn't exist."""
-    try:
-        return (PROMPTS_DIR / name).read_text()
-    except FileNotFoundError:
-        return None
-
-
 def load_system_prompt(include_project_context: bool = False) -> str:
-    """Assemble the system prompt fresh on every call so prompt edits take effect
-    without a restart.
+    """Assemble the base prompt and private training profile.
 
-    training_principles.md (the stable decision layer — weekly rhythm, phase,
-    progression principles) is always included. project_context.md (race
-    narrative) is included only when include_project_context is True; the morning
-    brief sets that on Mondays so the race goal isn't repeated every day.
+    Training principles are always included. Project context is included only
+    when requested; the morning brief does that on Mondays so race goals are not
+    repeated every day.
     """
     parts = [(PROMPTS_DIR / "system.md").read_text()]
-    principles = _read_prompt("training_principles.md")
+    principles = training_config.training_principles()
     if principles:
         parts.append(principles)
     if include_project_context:
-        ctx = _read_prompt("project_context.md")
+        ctx = training_config.project_context()
         if ctx:
             parts.append(ctx)
     return "\n\n---\n\n".join(parts)
 
 
-def synthesize(user_context: dict, model: str = MODEL, include_project_context: bool = False) -> dict:
+def synthesize(
+    user_context: dict,
+    model: str = MODEL,
+    include_project_context: bool = False,
+) -> dict:
     """Call Claude and force it to call the deliver_morning_brief tool.
 
     Returns parsed args: {"headline": str, "body": str, "flags": list[str]}.
     Raises RuntimeError if the model fails to call the tool.
 
-    include_project_context: when True, the project_context.md is appended to
-    the system prompt. The caller (pipeline.morning_brief) sets this only on
-    Mondays.
+    include_project_context: when True, the private project context is appended
+    to the system prompt. The caller sets this only on Mondays.
     """
     user_message = (
         "Here is today's training data. Call deliver_morning_brief with the brief.\n\n"
@@ -96,4 +90,4 @@ def synthesize(user_context: dict, model: str = MODEL, include_project_context: 
     for block in response.content:
         if getattr(block, "type", None) == "tool_use" and block.name == "deliver_morning_brief":
             return block.input
-    raise RuntimeError("Claude did not call deliver_morning_brief; response: %r" % response.content)
+    raise RuntimeError(f"Claude did not call deliver_morning_brief; response: {response.content!r}")
