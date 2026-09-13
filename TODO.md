@@ -24,7 +24,11 @@ Work on `context-revamp`; stop after stages 1–3 and open a PR against `main`.
 - [x] Test failures, duplicate updates, restart recovery, reset isolation, complete context,
       profile validation/authorization, preservation, and chat/brief consistency.
 - [x] Document operation, migration, limitations, and trace/backup access.
-- [ ] Run repository checks, review the diff, commit, push, and open a PR.
+- [x] Run repository checks, review the diff, commit, push, and open a PR.
+
+Delivered in [PR #4](https://github.com/danielcwq/strava-agent/pull/4).
+Validation: 42 automated tests, Ruff, and diff whitespace checks pass. Production
+deployment and live Telegram/model acceptance remain a release step after review.
 
 ## Deferred — do not implement in this PR
 - [ ] Stage 4: migrate to **Fable 5.1** (verify the API identifier/account access then),
