@@ -246,6 +246,34 @@ def test_summary_versions_link_sources_and_keep_original_exchanges(monkeypatch):
     assert context_builder.read_exchange("123", archive.get_run(run_id)["session_id"], second)
 
 
+def test_history_import_batches_preserve_all_sources_and_resume():
+    originals = [completed(f"Question {i}", "Evidence " * 10000) for i in range(12)]
+    run_id = running("continue")
+    calls = []
+
+    def summarize(material):
+        calls.append(material)
+        return "Earlier training discussions."
+
+    with archive.bind(run_id):
+        context_builder.build(run_id, "continue", "system", [], summarize)
+    assert len(calls) == 2  # Twelve old exchanges fit in two bounded requests.
+    with db.get_conn() as conn:
+        saved = conn.execute("SELECT * FROM context_summaries ORDER BY id DESC LIMIT 1").fetchone()
+    assert json.loads(saved["source_run_ids"]) == originals
+    assert all(archive.events(source) for source in originals)
+    with archive.bind(run_id):
+        context_builder.build(run_id, "continue", "system", [], summarize)
+    assert len(calls) == 2  # Durable progress prevents repeated summarization.
+
+
+def test_summary_excerpt_bounds_multibyte_history():
+    material = context_builder._summary_material(
+        {"id": "source"}, [{"role": "user", "content": "旅" * 10000}]
+    )
+    assert len(material.encode("utf-8")) < 4000
+
+
 @pytest.mark.parametrize(
     "instruction",
     [

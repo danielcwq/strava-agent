@@ -75,8 +75,13 @@ def _summary_material(run: dict, messages: list[dict]) -> str:
     text = "\n".join(m["role"] + ": " + _plain(m["content"]) for m in messages)
     # A large result stays in the archive; don't let a single historical exchange
     # make the summarizer exceed its own budget. References allow a full drill-in.
-    if len(text.encode("utf-8")) > 6000:
-        text = text[:1800] + "\n[excerpt; full exchange in archive]\n" + text[-1800:]
+    encoded = text.encode("utf-8")
+    if len(encoded) > 6000:
+        text = (
+            encoded[:1800].decode("utf-8", errors="ignore")
+            + "\n[excerpt; full exchange in archive]\n"
+            + encoded[-1800:].decode("utf-8", errors="ignore")
+        )
     return "run_id=" + run["id"] + "\n" + text
 
 
@@ -118,12 +123,30 @@ def build(
         recent.insert(0, item)
         used += cost
     older = pending[: len(pending) - len(recent)]
-    for old_run, messages in older:
+    # Compact bounded batches, not one model request per historical exchange.
+    # The last sequence and every source ID are still saved atomically per batch.
+    batches = []
+    batch = []
+    batch_size = 0
+    material_budget = min(24000, budget - settings.context_summary_tokens - 1000)
+    for old_run, old_messages in older:
+        excerpt = _summary_material(old_run, old_messages)
+        size = token_estimate(excerpt)
+        if batch and batch_size + size > material_budget:
+            batches.append(batch)
+            batch, batch_size = [], 0
+        batch.append((old_run, excerpt))
+        batch_size += size
+    if batch:
+        batches.append(batch)
+    for batch in batches:
+        batch_sources = [old_run["id"] for old_run, _ in batch]
+        excerpts = "\n\n".join(excerpt for _, excerpt in batch)
         material = (
             "Previous summary (fallible notes):\n"
             + summary
             + "\n\n"
-            + _summary_material(old_run, messages)
+            + excerpts
         )
         try:
             candidate = summarize(material).strip()
@@ -132,21 +155,22 @@ def build(
             summary = candidate
         except Exception as exc:
             archive.event(
-                "summary.fallback", {"error_type": type(exc).__name__, "source_run": old_run["id"]}
+                "summary.fallback",
+                {"error_type": type(exc).__name__, "source_runs": batch_sources},
             )
             # Deterministic, labeled excerpts remain useful when the model is unavailable.
-            prefix = "[Uninterpreted archive excerpt from run " + old_run["id"] + "]\n"
-            fallback = summary + "\n" + _summary_material(old_run, messages)
+            prefix = "[Uninterpreted archive excerpt from run " + batch_sources[-1] + "]\n"
+            fallback = summary + "\n" + excerpts
             limit = max(128, settings.context_summary_tokens - token_estimate(prefix) - 128)
             summary = prefix + fallback.encode("utf-8")[-limit:].decode("utf-8", errors="ignore")
-        sources.append(old_run["id"])
+        sources.extend(batch_sources)
         with db.get_conn() as conn:
             cur = conn.execute(
                 "INSERT INTO context_summaries(session_id,through_run_rowid,source_run_ids,summary,"
                 "created_at) VALUES (?,?,?,?,?)",
                 (
                     run["session_id"],
-                    old_run["sequence"],
+                    batch[-1][0]["sequence"],
                     json.dumps(sources),
                     summary,
                     int(time.time()),
