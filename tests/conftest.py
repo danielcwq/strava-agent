@@ -35,3 +35,5 @@ def isolated_state(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "telegram_webhook_secret", "test-webhook")
     monkeypatch.setattr(settings, "context_token_budget", 48000)
     monkeypatch.setattr(settings, "context_summary_tokens", 3000)
+    monkeypatch.setattr(settings, "chat_max_tokens", 16000)
+    monkeypatch.setattr(settings, "brief_max_tokens", 16000)

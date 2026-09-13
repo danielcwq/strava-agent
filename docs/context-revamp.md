@@ -1,7 +1,7 @@
 # Context, tracing, and the editable coaching profile
 
-This implements stages 1–3 in [TODO.md](../TODO.md). The existing chat and brief
-models are unchanged. Fable 5.1 and external-harness evaluation are deferred.
+This implements stages 1–4 in [TODO.md](../TODO.md). Chat, history summaries,
+and briefs use Fable 5.1. External-harness evaluation remains deferred.
 
 ## Storage and ownership
 
@@ -178,3 +178,33 @@ reset isolation, complete exchanges, summary sources, authorization/validation,
 profile consistency, export escaping, and backup/restore. They do not claim a live
 Fly deployment, real Telegram delivery, or model interpretation evals. Deployment
 and a small real-world acceptance check remain a release step after PR review.
+
+
+## Stage 4: model and structured briefs
+
+The default API identifier is `claude-fable-5-1`, configurable separately through
+`CHAT_MODEL` and `BRIEF_MODEL`. Chat uses high effort, briefs medium, and history
+summaries low. Adaptive thinking is enabled. Changing models requires checking
+that the replacement supports this request format.
+
+Briefs use native JSON schema output (`headline`, `body`, `flags`) and strict
+validation before delivery. Refused, incomplete, and malformed responses fail the
+run and remain inspectable in its trace. There is no 1,500-token brief ceiling.
+The configurable output allowances are 32,768 for chat, 16,384 for briefs, and
+8,192 for summaries, including reasoning. The prompt still asks for a short
+Telegram brief. Requests over 16,000 output tokens use streaming transport and
+archive the complete response before returning it. A failed stream records an
+error; unfinished streamed fragments are not yet persisted.
+
+Signed reasoning blocks stay in the raw archive. Request replay removes prior
+reasoning when rebuilding the profile/date/summary prefix; the active tool loop
+preserves it until that prefix changes (for example after a profile edit).
+This avoids replaying signatures bound to an obsolete context.
+
+`/usage` reports model request counts and tokens for chat and summaries. It excludes
+briefs and no longer applies obsolete Sonnet dollar rates to mixed-model history.
+Consult Anthropic Console for billing and credit balances.
+
+Deploy a tested commit with `fly deploy --remote-only --build-arg APP_REVISION=<sha>`.
+`/health` reports the embedded revision. The image includes `scripts/state_archive.py`
+for private trace export and consistent backups; it is not a public trace viewer.

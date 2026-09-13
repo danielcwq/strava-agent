@@ -1,6 +1,7 @@
 """Environment-loaded configuration. Validates required vars at import time."""
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -23,6 +24,14 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str | None = None
 
     anthropic_api_key: str
+    chat_model: str = "claude-fable-5-1"
+    brief_model: str = "claude-fable-5-1"
+    chat_max_tokens: int = Field(default=32768, ge=1024, le=128000)
+    brief_max_tokens: int = Field(default=16384, ge=1024, le=128000)
+    summary_max_tokens: int = Field(default=8192, ge=1024, le=128000)
+    chat_effort: Literal["low", "medium", "high"] = "high"
+    brief_effort: Literal["low", "medium", "high"] = "medium"
+    app_revision: str = "development"
 
     intervals_icu_api_key: str
     intervals_icu_athlete_id: str

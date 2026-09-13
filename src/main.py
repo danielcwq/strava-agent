@@ -56,7 +56,7 @@ _SUMMARY_TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 @app.get("/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "revision": settings.app_revision}
 
 
 @app.post("/garmin/push/{webhook_secret}")

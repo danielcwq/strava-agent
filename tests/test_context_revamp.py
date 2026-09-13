@@ -428,13 +428,12 @@ def test_chat_edit_uses_new_revision_in_same_loop_and_next_brief(monkeypatch):
         lambda **kw: response(
             [
                 {
-                    "type": "tool_use",
-                    "id": "brief_1",
-                    "name": "deliver_morning_brief",
-                    "input": {"headline": "Ready", "body": "Controlled work today.", "flags": []},
+                    "type": "text",
+                    "text": json.dumps(
+                        {"headline": "Ready", "body": "Controlled work today.", "flags": []}
+                    ),
                 }
             ],
-            "tool_use",
         ),
     )
     brief_id, created = archive.enqueue(
@@ -672,7 +671,7 @@ def test_startup_recovers_running_work_and_drains_queued_work(monkeypatch):
     monkeypatch.setattr(conversation, "handle_message", lambda *a: "Recovered queue")
     monkeypatch.setattr(telegram, "send_message", lambda *a, **kw: None)
     with TestClient(main.app) as client:
-        assert client.get("/health").json() == {"ok": True}
+        assert client.get("/health").json() == {"ok": True, "revision": settings.app_revision}
         assert finished.wait(3)
         assert archive.get_run(interrupted)["status"] == "interrupted"
         assert archive.get_run(pending)["status"] == "completed"

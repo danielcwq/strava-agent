@@ -9,7 +9,13 @@ def create(client, *, purpose: str, **kwargs):
             return create(client, purpose=purpose, **kwargs)
     request_event = archive.event("model.request", {"purpose": purpose, "request": kwargs})
     try:
-        response = client.messages.create(**kwargs)
+        if kwargs.get("max_tokens", 0) > 16000:
+            # Stream transport avoids the SDK's non-streaming timeout ceiling.
+            # Telegram still receives only the complete, validated reply.
+            with client.messages.stream(**kwargs) as stream:
+                response = stream.get_final_message()
+        else:
+            response = client.messages.create(**kwargs)
     except Exception as exc:
         archive.event(
             "model.error",
