@@ -2,9 +2,11 @@
 
 import json
 import time
+from collections import Counter
 from collections.abc import Callable
+from copy import deepcopy
 
-from src import archive, db
+from src import archive, db, tool_context
 from src.config import settings
 
 
@@ -12,6 +14,46 @@ def token_estimate(value) -> int:
     # A conservative upper estimate for this text-only application. UTF-8 byte
     # length also handles non-English text; includes room for message framing.
     return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")) + 64
+
+
+class RequestBudget:
+    """Anchor active-turn estimates to measured provider usage.
+
+    Count unchanged input once at its observed token cost. Charge every changed
+    message at the conservative byte bound plus framing. When the system/tool
+    prefix changes, fall back to the byte bound until the next measured response.
+    This works with server tools, which the token-count endpoint does not support.
+    """
+
+    def __init__(self):
+        self.previous = None
+        self.input_tokens = 0
+
+    def observe(self, request: dict, usage) -> None:
+        self.previous = deepcopy(request)
+        self.input_tokens = sum(
+            getattr(usage, key, 0) or 0
+            for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        )
+
+    def estimate(self, request: dict) -> int:
+        byte_bound = token_estimate(request)
+        if self.previous is None:
+            return byte_bound
+        prefix = ("model", "system", "tools", "thinking", "output_config")
+        if any(request.get(k) != self.previous.get(k) for k in prefix):
+            return byte_bound
+        # Multiset accounting handles repeated messages without undercharging new
+        # duplicates. Removed messages are not credited back: this remains an upper bound.
+        old = Counter(json.dumps(m, sort_keys=True) for m in self.previous["messages"])
+        extra = 1024
+        for message in request["messages"]:
+            key = json.dumps(message, sort_keys=True)
+            if old[key]:
+                old[key] -= 1
+            else:
+                extra += token_estimate(message)
+        return min(byte_bound, self.input_tokens + extra)
 
 
 def without_thinking(messages: list[dict]) -> list[dict]:
@@ -34,13 +76,16 @@ def without_thinking(messages: list[dict]) -> list[dict]:
     return replay
 
 
-def fit_tool_context(request: dict, history_messages: int) -> tuple[dict, int]:
+def fit_tool_context(
+    request: dict, history_messages: int, measure: Callable[[dict], int] = token_estimate
+) -> tuple[dict, int]:
     """Make room for tool results by dropping whole historical exchanges.
 
-    The current user instruction and its entire tool chain are protected. Raw
-    history stays archived and searchable; only this request's replay is reduced.
+    Preserve the current instruction, tool IDs, and write acknowledgements. Large
+    read-result bodies may become retrievable archive references. Raw history and
+    results stay archived; only this request's replay is reduced.
     """
-    before = token_estimate(request)
+    before = measure(request)
     if before <= settings.context_token_budget:
         return request, history_messages
     messages = request["messages"]
@@ -51,7 +96,7 @@ def fit_tool_context(request: dict, history_messages: int) -> tuple[dict, int]:
         # Compaction changes the prefix bound into reasoning signatures.
         replay_history = without_thinking(historical)
         candidate = {**request, "messages": replay_history + without_thinking(active)}
-        after = token_estimate(candidate)
+        after = measure(candidate)
         if after <= settings.context_token_budget:
             archive.event(
                 "context.compacted",
@@ -65,6 +110,10 @@ def fit_tool_context(request: dict, history_messages: int) -> tuple[dict, int]:
             )
             return candidate, len(replay_history)
         if not historical:
+            active, event_id = tool_context.compact_one(without_thinking(active))
+            if event_id is not None:
+                archive.event("context.tool_result_archived", {"event_id": event_id})
+                continue
             archive.event(
                 "context.overflow",
                 {

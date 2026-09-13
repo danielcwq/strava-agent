@@ -227,8 +227,50 @@ views do not alter the saved profile or the context supplied to the model.
 
 Tool loops re-check the request allowance after each result. If it grows too
 large, they remove prior reasoning signatures and whole older exchanges from the
-request replay, preserving the current user message and complete active tool chain.
+request replay, preserving the current user message and active tool-call pairing.
 `context.compacted` records the before/after estimates; originals remain in the
 archive. An active turn that cannot fit by itself fails explicitly with a
 `context.overflow` event instead of silently truncating instructions or tool data.
 Worker error traces also include the credential-redacted exception message.
+
+
+## Stress-tested tool context
+
+Active requests use the previous provider response's total input usage (including
+cache reads/writes) as their baseline. Unchanged messages retain that measured
+cost; changed messages are conservatively charged by serialized bytes plus
+framing. Prefix changes invalidate this measurement and fall back to the byte
+bound. `context.request_budget` records both estimates. The initial history
+selection still uses the conservative byte bound, independently of archive retention.
+
+Read-only tool responses over 12 KB become bounded views with durable event IDs.
+`read_tool_result` can inspect exact JSON-pointer paths and page through arrays,
+objects, or strings. Page coverage and omitted children are explicit. A growing
+active turn may replace older read-result bodies with these references while
+preserving tool IDs, save acknowledgements, errors, and assistant evidence notes.
+Original tool results remain in `tool.finished` events. Retrieval enforces chat
+ownership and session boundaries; older sessions still require an explicit request.
+
+The opt-in `scripts/stress_agent.py` suite uses a NEW directory and a consistent
+backup. It makes real model/read-only data calls, never sends Telegram messages,
+and checks that read-only questions cannot change the profile. Coaching and
+schedule edit cases affect only the database copy. Example:
+
+```sh
+PYTHONPATH=. uv run python scripts/stress_agent.py \
+  --db private-artifacts/state-backup.db \
+  --output private-artifacts/new-stress-run \
+  --allow-model-calls
+```
+
+Its `report.json` and SQLite trace are private artifacts. The automated suite also
+covers 24-tool chains, large parallel fetches, lossless paging, Unicode, malformed
+page arguments, scope boundaries, mutation preservation, usage caching, and
+message changes. The September 13 validation passed 84 automated tests and seven
+live-model scenarios (analysis, evidence follow-up, wellness, history recall,
+coaching edit, schedule edit, and saved-state follow-up), plus two focused analysis
+reruns. An exact replay of a previously failed nine-tool request completed with a
+60,405-byte serialized request and a conservative 38,687-token input estimate,
+below the unchanged 48,000-token allowance. No production preferences were edited
+by these isolated tests. These checks exercise runtime reliability and data coverage;
+race forecasts remain uncertain coaching interpretations rather than guarantees.

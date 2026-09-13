@@ -23,7 +23,15 @@ from zoneinfo import ZoneInfo
 
 from anthropic import Anthropic
 
-from src import archive, context_builder, db, model_calls, profile_tools, training_config
+from src import (
+    archive,
+    context_builder,
+    db,
+    model_calls,
+    profile_tools,
+    tool_context,
+    training_config,
+)
 from src.clients import google_sheets, intervals_icu
 from src.config import PROMPTS_DIR, settings
 from src.synthesis import _extract_laps, _is_quality_session, _parse_workout_date
@@ -42,6 +50,26 @@ _client = Anthropic(api_key=settings.anthropic_api_key)
 # ---------------------------------------------------------------------------
 
 TOOLS: list[dict] = profile_tools.TOOLS + [
+    {
+        "name": "read_tool_result",
+        "description": "Read an exact, bounded page of a tool result already saved in the trace. "
+        "Use event_id from an archived_result reference; follow returned JSON-pointer paths "
+        "and next_offset. Never treat omitted data as an empty or complete dataset.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "integer"},
+                "path": {
+                    "type": "string",
+                    "description": "JSON pointer, e.g. /workouts or /wellness",
+                },
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "include_previous_sessions": {"type": "boolean"},
+            },
+            "required": ["event_id"],
+        },
+    },
     {
         "name": "get_coaching_profile",
         "description": "Read the current saved profile and revision.",
@@ -403,7 +431,19 @@ def _read_history(args):
     )
 
 
+def _read_tool_result(args):
+    _, previous = _history_scope(args)
+    return tool_context.read(
+        args["event_id"],
+        args.get("path", ""),
+        args.get("offset", 0),
+        args.get("limit", 10),
+        previous_sessions=previous,
+    )
+
+
 TOOL_FUNCS = {
+    "read_tool_result": _read_tool_result,
     "get_coaching_profile": lambda args: training_config.get_profile(),
     "update_schedule": lambda args: profile_tools.update("schedule", **args),
     "update_race_goal": lambda args: profile_tools.update("race", **args),
@@ -517,6 +557,7 @@ def handle_message(chat_id: str, user_text: str) -> str:
     total_input = 0
     total_output = 0
     final_text = ""
+    budget = context_builder.RequestBudget()
 
     for _iteration in range(MAX_TOOL_ITERATIONS):
         with training_config.snapshot() as profile:
@@ -537,10 +578,22 @@ def handle_message(chat_id: str, user_text: str) -> str:
                 tools=TOOLS + [WEB_SEARCH_TOOL],
                 messages=messages,
             )
-            request, history_messages = context_builder.fit_tool_context(request, history_messages)
+            request, history_messages = context_builder.fit_tool_context(
+                request, history_messages, budget.estimate
+            )
             messages = request["messages"]
+            archive.event(
+                "context.request_budget",
+                {
+                    "estimated_input_tokens": budget.estimate(request),
+                    "serialized_byte_bound": context_builder.token_estimate(request),
+                    "budget": settings.context_token_budget,
+                    "previous_measured_input_tokens": budget.input_tokens,
+                },
+            )
             archive.event("profile.selected", {"revision": profile["revision"]})
             response = model_calls.create(_client, purpose="chat", **request)
+            budget.observe(request, response.usage)
         total_input += response.usage.input_tokens
         total_output += response.usage.output_tokens
         db.record_api_usage(_today_iso(), response.usage.input_tokens, response.usage.output_tokens)
@@ -566,14 +619,15 @@ def handle_message(chat_id: str, user_text: str) -> str:
                         "tool.started", {"id": block.id, "name": block.name, "input": block.input}
                     )
                     result = _execute_tool(block.name, block.input)
-                    archive.event(
+                    result_event = archive.event(
                         "tool.finished", {"id": block.id, "name": block.name, "result": result}
                     )
+                    prompt_result = tool_context.for_prompt(result_event, block.name, result)
                     tool_results.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": json.dumps(result, default=str),
+                            "content": json.dumps(prompt_result, ensure_ascii=False, default=str),
                             "is_error": isinstance(result, dict) and "error" in result,
                         }
                     )
