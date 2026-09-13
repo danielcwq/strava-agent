@@ -3,45 +3,20 @@
 import json
 
 from anthropic import Anthropic
+from pydantic import BaseModel, ConfigDict, Field
 
 from src import model_calls, training_config
 from src.config import PROMPTS_DIR, settings
 
-MODEL = "claude-sonnet-4-6"
-MAX_TOKENS = 1500
-
 _client = Anthropic(api_key=settings.anthropic_api_key)
 
-# Tool-use schema. Forces Claude to produce structured output matching the brief
-# format — no more "thinking out loud" preambles or markdown-wrapped JSON.
-_BRIEF_TOOL = {
-    "name": "deliver_morning_brief",
-    "description": "Deliver the morning brief to the runner via Telegram.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "headline": {
-                "type": "string",
-                "description": "One short line — the Telegram preview the runner sees first.",
-            },
-            "body": {
-                "type": "string",
-                "description": (
-                    "Line 1: stat line (e.g. 'Sleep 7h 12m (84). HRV 58ms (-0.4σ). "
-                    "RHR 47. TSB +4.'). Then a blank line, then 2-3 prose sentences."
-                ),
-            },
-            "flags": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Short tags for anomalies, e.g. 'HRV -1.5σ', 'sleep deficit'. May be empty."
-                ),
-            },
-        },
-        "required": ["headline", "body", "flags"],
-    },
-}
+
+class MorningBrief(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    headline: str = Field(description="One short line for the Telegram preview.")
+    body: str = Field(description="A stat line, blank line, then 2–3 concise coaching sentences.")
+    flags: list[str] = Field(description="Short anomaly tags; may be empty.")
 
 
 def load_system_prompt(include_project_context: bool = False) -> str:
@@ -56,31 +31,28 @@ def load_system_prompt(include_project_context: bool = False) -> str:
 
 def synthesize(
     user_context: dict,
-    model: str = MODEL,
-    include_project_context: bool = False,
+    model: str | None = None,
+    include_project_context: bool = True,
 ) -> dict:
-    """Call Claude and force it to call the deliver_morning_brief tool.
-
-    Returns parsed args: {"headline": str, "body": str, "flags": list[str]}.
-    Raises RuntimeError if the model fails to call the tool.
-
-    include_project_context is retained for compatibility; current profile is always included.
-    """
+    """Produce and validate native structured JSON; never deliver partial output."""
     user_message = (
-        "Here is today's training data. Call deliver_morning_brief with the brief.\n\n"
+        "Write today's concise morning brief using the supplied training data.\n\n"
         f"{json.dumps(user_context, indent=2, default=str)}"
     )
     response = model_calls.create(
         _client,
         purpose="brief",
-        model=model,
-        max_tokens=MAX_TOKENS,
+        model=model or settings.brief_model,
+        max_tokens=settings.brief_max_tokens,
+        thinking={"type": "adaptive"},
+        output_config={
+            "effort": settings.brief_effort,
+            "format": {"type": "json_schema", "schema": MorningBrief.model_json_schema()},
+        },
         system=load_system_prompt(include_project_context=include_project_context),
-        tools=[_BRIEF_TOOL],
-        tool_choice={"type": "tool", "name": "deliver_morning_brief"},
         messages=[{"role": "user", "content": user_message}],
     )
-    for block in response.content:
-        if getattr(block, "type", None) == "tool_use" and block.name == "deliver_morning_brief":
-            return block.input
-    raise RuntimeError(f"Claude did not call deliver_morning_brief; response: {response.content!r}")
+    if response.stop_reason != "end_turn":
+        raise RuntimeError(f"brief was incomplete or refused: {response.stop_reason}")
+    text = "".join(block.text for block in response.content if block.type == "text")
+    return MorningBrief.model_validate_json(text).model_dump()

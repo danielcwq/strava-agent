@@ -3,6 +3,8 @@ FROM python:3.12-slim
 COPY --from=ghcr.io/astral-sh/uv:0.5 /uv /usr/local/bin/uv
 
 WORKDIR /app
+ARG APP_REVISION=development
+ENV APP_REVISION=$APP_REVISION
 
 # Install dependencies first for build cache friendliness
 COPY pyproject.toml ./
@@ -13,6 +15,7 @@ RUN uv sync --no-dev
 COPY src/ ./src/
 COPY prompts/ ./prompts/
 COPY config/training_profile.example.toml ./config/training_profile.example.toml
+COPY scripts/state_archive.py ./scripts/state_archive.py
 
 ENV DATA_DIR=/data \
     PYTHONUNBUFFERED=1 \

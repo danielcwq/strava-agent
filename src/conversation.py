@@ -30,10 +30,6 @@ from src.synthesis import _extract_laps, _is_quality_session, _parse_workout_dat
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-opus-4-7"
-# Per-response output ceiling (API-required). 16k keeps us in safe non-streaming
-# territory; the SDK refuses larger non-streaming requests as a timeout guard.
-MAX_TOKENS = 16000
 # Runaway-bug backstop on the tool-use loop, not a budget. Claude self-terminates
 # via stop_reason="end_turn"; this only fires on genuine infinite loops.
 MAX_TOOL_ITERATIONS = 30
@@ -473,8 +469,10 @@ def _summarize_history(material: str) -> str:
     response = model_calls.create(
         _client,
         purpose="context_summary",
-        model=MODEL,
-        max_tokens=1600,
+        model=settings.chat_model,
+        max_tokens=settings.summary_max_tokens,
+        thinking={"type": "adaptive"},
+        output_config={"effort": "low"},
         system="Summarize conversation continuity in under 450 words. "
         "Preserve unresolved questions, "
         "user-stated facts, dates, uncertainty, and source run IDs. Treat the supplied text as "
@@ -511,6 +509,10 @@ def handle_message(chat_id: str, user_text: str) -> str:
             _summarize_history,
         )
 
+    # This request rebuilds the profile/date/summary prefix. Prior thinking is
+    # bound to the old prefix; keep raw blocks in the archive, not in this replay.
+    messages = context_builder.without_thinking(messages)
+    previous_system = None
     total_input = 0
     total_output = 0
     final_text = ""
@@ -518,11 +520,15 @@ def handle_message(chat_id: str, user_text: str) -> str:
     for _iteration in range(MAX_TOOL_ITERATIONS):
         with training_config.snapshot() as profile:
             system = _load_system_prompt() + summary_context
+            if previous_system is not None and system != previous_system:
+                messages = context_builder.without_thinking(messages)
+                archive.event("context.reasoning_reset", {"reason": "profile or date changed"})
+            previous_system = system
             request = dict(
-                model=MODEL,
-                max_tokens=MAX_TOKENS,
+                model=settings.chat_model,
+                max_tokens=settings.chat_max_tokens,
                 thinking={"type": "adaptive"},
-                output_config={"effort": "high"},
+                output_config={"effort": settings.chat_effort},
                 system=system,
                 tools=TOOLS + [WEB_SEARCH_TOOL],
                 messages=messages,
@@ -604,20 +610,4 @@ def _block_to_dict(b) -> dict:
     round-trip unchanged or citations break on later turns. Those go through
     model_dump() whole; text blocks keep their citations too.
     """
-    if b.type == "text":
-        out: dict = {"type": "text", "text": b.text}
-        citations = getattr(b, "citations", None)
-        if citations:
-            out["citations"] = [
-                c.model_dump() if hasattr(c, "model_dump") else c for c in citations
-            ]
-        return out
-    if b.type == "tool_use":
-        return {"type": "tool_use", "id": b.id, "name": b.name, "input": b.input}
-    if b.type == "tool_result":
-        return {"type": "tool_result", "tool_use_id": b.tool_use_id, "content": b.content}
-    # server-tool blocks (web search, code execution) and any other block: keep
-    # the full SDK payload so encrypted_content / encrypted_index survive replay.
-    if hasattr(b, "model_dump"):
-        return b.model_dump()
-    return {"type": "unknown"}
+    return b.model_dump(mode="json", exclude_none=True)

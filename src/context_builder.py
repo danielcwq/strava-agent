@@ -14,6 +14,26 @@ def token_estimate(value) -> int:
     return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")) + 64
 
 
+def without_thinking(messages: list[dict]) -> list[dict]:
+    """A rebuilt prefix cannot reuse Fable's prefix-bound reasoning signatures.
+
+    Preserve text and complete tool exchanges; the unmodified originals remain
+    in run_events. Within a stable tool loop, new reasoning still round-trips.
+    """
+    replay = []
+    for message in messages:
+        content = message["content"]
+        if isinstance(content, list):
+            content = [
+                block
+                for block in content
+                if block.get("type") not in {"thinking", "redacted_thinking"}
+            ]
+        if content:
+            replay.append({**message, "content": content})
+    return replay
+
+
 def _plain(content) -> str:
     if isinstance(content, str):
         return content

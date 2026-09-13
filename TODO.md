@@ -1,6 +1,6 @@
 # Context revamp
 
-Work on `context-revamp`; stop after stages 1–3 and open a PR against `main`.
+Work on `context-revamp`; deliver stages 1–4 through PR #4 and deploy for testing.
 
 ## Stage 1 — Durable tracing
 - [x] Add sessions, runs, ordered events, and preserve legacy history.
@@ -27,12 +27,16 @@ Work on `context-revamp`; stop after stages 1–3 and open a PR against `main`.
 - [x] Run repository checks, review the diff, commit, push, and open a PR.
 
 Delivered in [PR #4](https://github.com/danielcwq/strava-agent/pull/4).
-Validation: 42 automated tests, Ruff, and diff whitespace checks pass. Production
-deployment and live Telegram/model acceptance remain a release step after review.
+Validation: 50 automated tests, Ruff, and diff whitespace checks pass.
+Deployment and live acceptance results are recorded in PR #4.
+
+## Stage 4 — Fable 5.1
+- [x] Verify model access and configure chat, summaries, and briefs.
+- [x] Native structured briefs with configurable output allowances.
+- [x] Preserve signed reasoning in traces while rebuilding compatible request context.
+- [x] Add migration regression tests and deployment revision identification.
 
 ## Deferred — do not implement in this PR
-- [ ] Stage 4: migrate to **Fable 5.1** (verify the API identifier/account access then),
-      native structured briefs, configurable output allowance; evaluate with new traces.
 - [ ] Stage 5: evaluate an external harness using **Fable 5.1** where supported;
       compare against the simple runtime before adopting Prime Agent / Claude Agent SDK
       or another integration. Use expiring credits when this stage is authorized.
