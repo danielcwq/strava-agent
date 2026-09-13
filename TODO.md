@@ -27,7 +27,7 @@ Work on `context-revamp`; deliver stages 1–4 through PR #4 and deploy for test
 - [x] Run repository checks, review the diff, commit, push, and open a PR.
 
 Delivered in [PR #4](https://github.com/danielcwq/strava-agent/pull/4).
-Validation: 50 automated tests, Ruff, and diff whitespace checks pass.
+Validation: 52 automated tests, Ruff, and diff whitespace checks pass.
 Deployment and live acceptance results are recorded in PR #4.
 
 ## Stage 4 — Fable 5.1

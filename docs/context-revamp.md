@@ -208,3 +208,8 @@ Consult Anthropic Console for billing and credit balances.
 Deploy a tested commit with `fly deploy --remote-only --build-arg APP_REVISION=<sha>`.
 `/health` reports the embedded revision. The image includes `scripts/state_archive.py`
 for private trace export and consistent backups; it is not a public trace viewer.
+
+Historical exchanges are compacted in batches of at most 24,000 estimated material
+tokens (lower when the configured context budget requires it), with source IDs and
+a durable checkpoint per batch. The initial import therefore needs a few summary
+requests instead of one per old exchange. Completed batches survive a restart.
