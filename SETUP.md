@@ -270,6 +270,11 @@ You run this **once**, locally. The app rotates tokens in SQLite from there.
    fly deploy
    ```
 6. **Upload your bootstrapped OAuth tokens to the Fly volume.** The bootstrap scripts wrote them to your local `data/state.db`; we now copy that file onto Fly:
+
+   **First deployment only.** Once the app is running, its database also holds
+   live conversations, traces and profile revisions. Do not replace that database
+   with an older local copy on redeploy. See [backup and restore operations](docs/context-revamp.md).
+
    ```bash
    fly ssh sftp shell
    sftp> put data/state.db /data/state.db

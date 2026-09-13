@@ -1,9 +1,11 @@
 """SQLite state: Garmin OAuth tokens, morning-brief dedup, and Garmin summary store."""
+
 import json
 import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 from src.config import settings
 
@@ -65,6 +67,52 @@ CREATE TABLE IF NOT EXISTS api_usage_daily (
     output_tok  INTEGER NOT NULL DEFAULT 0,
     requests    INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    closed_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS active_chat_session
+    ON chat_sessions(chat_id) WHERE closed_at IS NULL;
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES chat_sessions(id),
+    chat_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    source_key TEXT UNIQUE,
+    status TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    legacy_incomplete INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES agent_runs(id),
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_by_run ON run_events(run_id, id);
+CREATE INDEX IF NOT EXISTS runs_by_session ON agent_runs(session_id, created_at);
+CREATE TABLE IF NOT EXISTS context_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES chat_sessions(id),
+    through_run_rowid INTEGER NOT NULL,
+    source_run_ids TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS profile_revisions (
+    revision INTEGER PRIMARY KEY AUTOINCREMENT,
+    document TEXT NOT NULL,
+    source_event_id INTEGER REFERENCES run_events(id),
+    instruction TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS archive_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 
@@ -78,8 +126,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
 @contextmanager
 def get_conn() -> Iterator[sqlite3.Connection]:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(settings.data_dir / "state.db")
+    conn = sqlite3.connect(settings.data_dir / "state.db", timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA journal_mode=WAL")
     try:
         conn.executescript(_SCHEMA)
         _migrate(conn)
@@ -267,53 +317,21 @@ def get_latest_garmin_summary(summary_type: str) -> dict | None:
     return json.loads(row["payload"]) if row else None
 
 
-# === Conversation history (Phase 5.2) ===
-
-def append_conversation_turn(chat_id: str, role: str, content) -> None:
-    """Append a new turn. `content` may be str or a JSON-serializable list of blocks."""
-    payload = content if isinstance(content, str) else json.dumps(content, default=_block_default)
-    with get_conn() as conn:
-        next_seq = conn.execute(
-            "SELECT COALESCE(MAX(turn_seq), 0) + 1 FROM conversation_turns WHERE chat_id = ?",
-            (chat_id,),
-        ).fetchone()[0]
-        conn.execute(
-            "INSERT INTO conversation_turns (chat_id, turn_seq, role, content, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (chat_id, next_seq, role, payload, int(time.time())),
-        )
-
-
-def load_conversation_history(
-    chat_id: str,
-    max_turns: int = 20,
-    max_age_seconds: int = 86400,
-) -> list[dict]:
-    """Return last N turns within the time window, oldest-first, in Anthropic message format."""
-    cutoff = int(time.time()) - max_age_seconds
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT role, content FROM conversation_turns "
-            "WHERE chat_id = ? AND created_at >= ? "
-            "ORDER BY turn_seq DESC LIMIT ?",
-            (chat_id, cutoff, max_turns),
-        ).fetchall()
-    messages: list[dict] = []
-    for row in reversed(rows):
-        content_raw = row["content"]
-        # Assistant turns are JSON arrays of content blocks; user turns are plain strings.
-        try:
-            content = json.loads(content_raw)
-        except json.JSONDecodeError:
-            content = content_raw
-        messages.append({"role": row["role"], "content": content})
-    return messages
-
-
-def reset_conversation(chat_id: str) -> int:
-    with get_conn() as conn:
-        cur = conn.execute("DELETE FROM conversation_turns WHERE chat_id = ?", (chat_id,))
-    return cur.rowcount
+def backup_database(destination: Path) -> None:
+    """Consistent SQLite online backup, including committed WAL contents."""
+    destination = destination.resolve()
+    if destination == (settings.data_dir / "state.db").resolve() or destination.exists():
+        raise ValueError("backup destination must be a new file")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.touch(mode=0o600, exist_ok=False)
+    try:
+        with get_conn() as source, sqlite3.connect(destination) as target:
+            source.backup(target)
+            if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("backup integrity check failed")
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
 
 
 def record_api_usage(day: str, input_tokens: int, output_tokens: int) -> None:
@@ -358,12 +376,3 @@ def get_api_usage_since(start_day: str) -> dict:
         "requests": sum(r["requests"] for r in rows),
         "active_days": len(rows),
     }
-
-
-def _block_default(o):
-    """JSON encoder fallback for Anthropic SDK content block objects."""
-    if hasattr(o, "model_dump"):
-        return o.model_dump()
-    if hasattr(o, "__dict__"):
-        return o.__dict__
-    raise TypeError(f"not serializable: {type(o)}")

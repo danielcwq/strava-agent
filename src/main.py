@@ -12,36 +12,19 @@ hrv, stressDetails, etc.). We:
 
 The handler must ack 200 within 30s; brief generation runs in a background task.
 """
+
 import json
 import logging
-import random
 import re
 import secrets
+import threading
+from contextlib import asynccontextmanager
 from datetime import date
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
-from src import db
-from src.clients import telegram
+from src import archive, db, worker
 from src.config import settings
-from src.conversation import handle_message as handle_chat_message
-from src.pipeline import morning_brief
-from src.telegram_commands import dispatch as dispatch_command
-
-# Short status messages the bot fires immediately on inbound non-slash text, so the
-# user sees activity within ~200ms instead of waiting 5–30s for Claude to respond.
-_LOADING_PHRASES = (
-    "Thinking...",
-    "Pondering...",
-    "Loading...",
-    "On it...",
-    "Just a sec...",
-    "Looking it up...",
-    "Crunching numbers...",
-    "Cogitating...",
-    "Hmm...",
-    "Reading your data...",
-)
 
 logging.basicConfig(
     level=settings.log_level,
@@ -49,7 +32,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="morning-brief-agent")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    archive.migrate_legacy()
+    archive.recover_interrupted()
+    stop = threading.Event()
+    thread = threading.Thread(target=worker.serve, args=(stop,), daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        # Any unfinished run stays marked running until next startup recovery.
+        thread.join(timeout=2)
+
+
+app = FastAPI(title="morning-brief-agent", lifespan=lifespan)
 
 _MAX_GARMIN_BODY_BYTES = 1_000_000
 _SUMMARY_TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
@@ -110,9 +109,16 @@ async def garmin_push(
             stored += 1
 
             if summary_type == "sleeps" and _should_trigger_brief(entry):
-                db.mark_brief_sent(calendar_date, entry.get("summaryId") or "")
-                background_tasks.add_task(_run_brief_safely, entry)
-                brief_dispatched += 1
+                _, created = archive.enqueue(
+                    str(settings.telegram_chat_id),
+                    "brief",
+                    entry,
+                    source_key="garmin-sleep:" + calendar_date,
+                    brief_date=calendar_date,
+                )
+                if created:
+                    background_tasks.add_task(worker.process_pending)
+                    brief_dispatched += 1
 
     return {
         "received": received,
@@ -173,23 +179,13 @@ def _should_trigger_brief(entry: dict) -> bool:
     return True
 
 
-def _run_brief_safely(sleep_entry: dict) -> None:
-    try:
-        morning_brief(sleep_summary=sleep_entry)
-    except Exception:
-        logger.exception(
-            "morning_brief failed for sleep summaryId=%s",
-            sleep_entry.get("summaryId"),
-        )
-
-
 @app.post("/telegram/webhook")
 async def telegram_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     x_telegram_bot_api_secret_token: str | None = Header(default=None),
 ) -> dict:
-    """Inbound Telegram webhook. Phase 5.0: echo-only.
+    """Persist authorized input before acknowledging; execute through the durable queue.
 
     Authenticates via Telegram's secret_token mechanism (set during setWebhook).
     Drops messages from any chat_id other than the configured TELEGRAM_CHAT_ID,
@@ -220,29 +216,22 @@ async def telegram_webhook(
     if not text:
         return {"ok": True, "skipped": "empty text"}
 
-    result = dispatch_command(text, chat_id=chat_id, message_id=message.get("message_id", 0))
-    if result is None:
-        # Non-slash chat: send a loading message immediately so the user sees activity,
-        # then dispatch the (slow) Claude call as a background task so the webhook
-        # returns 200 fast (avoids Telegram's webhook timeout).
-        try:
-            telegram.send_message(random.choice(_LOADING_PHRASES), parse_mode=None)
-        except Exception:
-            logger.exception("failed to send loading message; proceeding")
-        background_tasks.add_task(_run_chat_safely, chat_id, text)
-        return {"ok": True, "replied": True, "via": "chat-scheduled"}
-
-    telegram.send_message(result.text, parse_mode=result.parse_mode)
-    return {"ok": True, "replied": True, "via": "command"}
-
-
-def _run_chat_safely(chat_id: str, user_text: str) -> None:
-    try:
-        reply = handle_chat_message(chat_id, user_text)
-    except Exception as e:
-        logger.exception("conversation handler failed for chat=%s", chat_id)
-        reply = f"error: {type(e).__name__}: {e}"
-    try:
-        telegram.send_message(reply, parse_mode="Markdown")
-    except Exception:
-        logger.exception("failed to send chat reply")
+    update_id = update.get("update_id")
+    message_id = message.get("message_id")
+    if type(update_id) is not int or type(message_id) is not int:
+        raise HTTPException(status_code=400, detail="missing update/message ID")
+    kind = "command" if text.startswith("/") else "chat"
+    run_id, created = archive.enqueue(
+        chat_id,
+        kind,
+        {
+            "text": text,
+            "message_id": message_id,
+            "update_id": update_id,
+            "sender_id": message.get("from", {}).get("id"),
+        },
+        source_key=f"telegram:{chat_id}:{message_id}",
+    )
+    if created:
+        background_tasks.add_task(worker.process_pending)
+    return {"ok": True, "run_id": run_id, "queued": created}

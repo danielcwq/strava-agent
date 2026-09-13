@@ -4,13 +4,7 @@ from src.telegram_commands.base import CommandContext, CommandResult, CommandSpe
 
 
 def handle(ctx: CommandContext) -> CommandResult:
-    body = training_config.project_context()
-    if not body:
-        return CommandResult(text="no project context is set")
-    # Telegram message cap is 4096 chars; truncate with a marker if longer.
-    if len(body) > 3800:
-        body = body[:3800] + "\n\n…(truncated; edit the private training profile to update)"
-    return CommandResult(text=body, parse_mode="Markdown")
+    return CommandResult(text=training_config.profile_context(), parse_mode=None)
 
 
 SPEC = CommandSpec(

@@ -1,11 +1,14 @@
-"""/reset — clear the conversation history for this chat."""
-from src import db
+"""/reset — start a fresh conversation for this chat."""
+
+from src import archive
 from src.telegram_commands.base import CommandContext, CommandSpec
 
 
 def handle(ctx: CommandContext) -> str:
-    n = db.reset_conversation(ctx.chat_id)
-    return f"cleared {n} message{'s' if n != 1 else ''} from history"
+    archive.reset_session(ctx.chat_id)
+    return "Started a fresh conversation. Your saved profile and archived history are preserved."
 
 
-SPEC = CommandSpec(name="reset", help="clear conversation history", handler=handle)
+SPEC = CommandSpec(
+    name="reset", help="start fresh; preserve profile and archived history", handler=handle
+)

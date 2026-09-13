@@ -670,10 +670,10 @@ def _build_training_snapshot(today: date, workouts: list[dict], tz: ZoneInfo) ->
     return {
         "weekday": today.strftime("%A"),
         "today_role": role,
-        "today_role_detail": training_config.ROLE_DETAIL.get(role, role),
+        "today_role_detail": training_config.role_detail(role),
         "next_key_day": {"weekday": next_key.strftime("%A"), "days_away": days_away},
         "today_protects_next_key": role in ("support", "rest") and days_away == 1,
-        "phase": training_config.CURRENT_PHASE,
+        "phase": training_config.current_phase(),
         "days_to_race": training_config.days_to_race(today),
         "volume": _calendar_volume(workouts, today, tz),
         "quality": _quality_recency(workouts, today, tz),
@@ -738,12 +738,10 @@ def build_context(sleep_summary: dict | None = None) -> dict:
 
 
 def synthesize_brief(sleep_summary: dict | None = None) -> dict:
-    """Build context, call Claude, return parsed {headline, body, flags}.
+    """Build data and prompts against the same current profile revision every day."""
+    from src import archive
 
-    Project context (race goal, training philosophy) is included only on Mondays
-    in the user's local timezone — Monday's brief anchors the training week
-    without spamming race reminders on every other day.
-    """
-    context = build_context(sleep_summary=sleep_summary)
-    is_monday = _today_local().weekday() == 0
-    return claude.synthesize(context, include_project_context=is_monday)
+    with training_config.snapshot() as profile:
+        archive.event("profile.selected", {"revision": profile["revision"]})
+        context = build_context(sleep_summary=sleep_summary)
+        return claude.synthesize(context, include_project_context=True)

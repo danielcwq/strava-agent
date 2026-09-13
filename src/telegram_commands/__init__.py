@@ -60,8 +60,11 @@ def dispatch(text: str, chat_id: str, message_id: int) -> CommandResult | None:
     try:
         result = spec.handler(ctx)
     except Exception as e:
+        from src import archive
+
+        archive.event("command.error", {"name": name, "error_type": type(e).__name__})
         logger.exception("error running /%s", name)
-        return CommandResult(text=f"error running /{name}: {type(e).__name__}: {e}")
+        return CommandResult(text=f"error running /{name}: {type(e).__name__}", failed=True)
 
     if isinstance(result, CommandResult):
         return result

@@ -36,7 +36,13 @@ def _configure_webhook(monkeypatch):
         "mark_brief_sent",
         lambda calendar_date, summary_id: marked.append((calendar_date, summary_id)),
     )
-    monkeypatch.setattr(main, "_run_brief_safely", dispatched.append)
+    def enqueue(chat_id, kind, payload, source_key=None, brief_date=None):
+        marked.append((brief_date, payload.get("summaryId", "")))
+        dispatched.append(payload)
+        return "run-1", True
+
+    monkeypatch.setattr(main.archive, "enqueue", enqueue)
+    monkeypatch.setattr(main.worker, "process_pending", lambda: None)
     return stored, marked, dispatched
 
 

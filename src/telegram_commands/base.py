@@ -28,6 +28,7 @@ class CommandResult:
 
     text: str
     parse_mode: str | None = None   # "Markdown" | "MarkdownV2" | None
+    failed: bool = False
 
 
 @dataclass(frozen=True)
