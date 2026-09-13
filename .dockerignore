@@ -12,10 +12,19 @@ __pycache__
 .env
 .env.*
 data/
+private-artifacts/
+*.db
+*.db-wal
+*.db-shm
+/*.json
+**/*service-account*.json
+**/*service_account*.json
+**/gcp-key*.json
 config/*.local.toml
 
 # Local-only files not needed at runtime
-scripts/
+scripts/*
+!scripts/state_archive.py
 garmin_documentation/
 README.md
 SETUP.md
