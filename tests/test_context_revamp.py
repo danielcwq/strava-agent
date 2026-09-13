@@ -322,7 +322,13 @@ def test_profile_edit_compacts_full_history_after_profile_tool(monkeypatch):
             response([{"type": "text", "text": "Saved your coaching instructions."}]),
         ]
     )
-    monkeypatch.setattr(conversation._client.messages, "create", lambda **kw: next(replies))
+
+    def measured_reply(**kw):
+        reply = next(replies)
+        reply.usage.input_tokens = context_builder.token_estimate(kw)
+        return reply
+
+    monkeypatch.setattr(conversation._client.messages, "create", measured_reply)
     run_id = running(instruction)
     with archive.bind(run_id):
         assert (
