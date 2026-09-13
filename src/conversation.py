@@ -512,6 +512,7 @@ def handle_message(chat_id: str, user_text: str) -> str:
     # This request rebuilds the profile/date/summary prefix. Prior thinking is
     # bound to the old prefix; keep raw blocks in the archive, not in this replay.
     messages = context_builder.without_thinking(messages)
+    history_messages = len(messages) - 1
     previous_system = None
     total_input = 0
     total_output = 0
@@ -521,7 +522,10 @@ def handle_message(chat_id: str, user_text: str) -> str:
         with training_config.snapshot() as profile:
             system = _load_system_prompt() + summary_context
             if previous_system is not None and system != previous_system:
-                messages = context_builder.without_thinking(messages)
+                history = context_builder.without_thinking(messages[:history_messages])
+                active = context_builder.without_thinking(messages[history_messages:])
+                messages = history + active
+                history_messages = len(history)
                 archive.event("context.reasoning_reset", {"reason": "profile or date changed"})
             previous_system = system
             request = dict(
@@ -533,10 +537,8 @@ def handle_message(chat_id: str, user_text: str) -> str:
                 tools=TOOLS + [WEB_SEARCH_TOOL],
                 messages=messages,
             )
-            if context_builder.token_estimate(request) > settings.context_token_budget:
-                raise ValueError(
-                    "tool results exceeded the context budget; ask a narrower question"
-                )
+            request, history_messages = context_builder.fit_tool_context(request, history_messages)
+            messages = request["messages"]
             archive.event("profile.selected", {"revision": profile["revision"]})
             response = model_calls.create(_client, purpose="chat", **request)
         total_input += response.usage.input_tokens

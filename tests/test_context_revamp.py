@@ -274,6 +274,99 @@ def test_summary_excerpt_bounds_multibyte_history():
     assert len(material.encode("utf-8")) < 4000
 
 
+def test_profile_edit_compacts_full_history_after_profile_tool(monkeypatch):
+    instruction = "Update my coaching instructions: prioritize settling in over training."
+    profile = training_config.get_profile()
+    current = {"role": "user", "content": instruction}
+    base = context_builder.token_estimate(
+        {
+            "system": conversation._load_system_prompt(),
+            "tools": conversation.TOOLS + [conversation.WEB_SEARCH_TOOL],
+            "messages": [current],
+        }
+    )
+    old_reply = "older evidence " * ((settings.context_token_budget - base - 1600) // 15)
+    old = completed("Past training discussion", old_reply)
+    history = context_builder.exchange(archive.get_run(old))
+    monkeypatch.setattr(context_builder, "build", lambda *a: (history + [current], ""))
+    # A full profile/tool response pushes an otherwise valid request over the cap.
+    monkeypatch.setitem(
+        conversation.TOOL_FUNCS,
+        "get_coaching_profile",
+        lambda args: {**profile, "notes": "saved preferences " * 600},
+    )
+    replies = iter(
+        [
+            response(
+                [
+                    {"type": "thinking", "thinking": "", "signature": "bound-to-old-prefix"},
+                    {"type": "tool_use", "id": "read", "name": "get_coaching_profile", "input": {}},
+                ],
+                "tool_use",
+            ),
+            response(
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "save",
+                        "name": "update_coaching_instructions",
+                        "input": {
+                            "changes": {"training_principles": "Prioritize settling in."},
+                            "expected_revision": profile["revision"],
+                            "instruction": instruction,
+                        },
+                    }
+                ],
+                "tool_use",
+            ),
+            response([{"type": "text", "text": "Saved your coaching instructions."}]),
+        ]
+    )
+    monkeypatch.setattr(conversation._client.messages, "create", lambda **kw: next(replies))
+    run_id = running(instruction)
+    with archive.bind(run_id):
+        assert (
+            conversation.handle_message("123", instruction) == "Saved your coaching instructions."
+        )
+    assert training_config.get_profile()["revision"] == profile["revision"] + 1
+    events = archive.events(run_id)
+    requests = [e["payload"]["request"] for e in events if e["kind"] == "model.request"]
+    assert len(requests) == 3
+    assert all(context_builder.token_estimate(r) <= settings.context_token_budget for r in requests)
+    assert requests[1]["messages"][0] == current
+    assert requests[1]["messages"][-1]["content"][0]["tool_use_id"] == "read"
+    assert any(e["kind"] == "context.compacted" for e in events)
+    assert "bound-to-old-prefix" not in json.dumps(requests[1])
+    assert "bound-to-old-prefix" in json.dumps(events)
+    assert old_reply in json.dumps(archive.events(old))
+
+
+def test_oversized_active_turn_is_never_silently_truncated():
+    import copy
+
+    run_id = running()
+    request = {
+        "messages": [
+            {"role": "user", "content": "Set my instructions."},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "read", "name": "get_coaching_profile", "input": {}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "read", "content": "x" * 50000}],
+            },
+        ]
+    }
+    original = copy.deepcopy(request)
+    with archive.bind(run_id), pytest.raises(ValueError, match="current instruction"):
+        context_builder.fit_tool_context(request, 0)
+    assert request == original
+    assert archive.events(run_id)[-1]["kind"] == "context.overflow"
+
+
 @pytest.mark.parametrize(
     "instruction",
     [

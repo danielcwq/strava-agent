@@ -223,3 +223,12 @@ schedule, and race goal. `/context instructions`, `/context background`, and
 include a next-page command (for example `/context instructions 2`). Text is
 escaped and each page is rendered as a complete Telegram HTML message. These
 views do not alter the saved profile or the context supplied to the model.
+
+
+Tool loops re-check the request allowance after each result. If it grows too
+large, they remove prior reasoning signatures and whole older exchanges from the
+request replay, preserving the current user message and complete active tool chain.
+`context.compacted` records the before/after estimates; originals remain in the
+archive. An active turn that cannot fit by itself fails explicitly with a
+`context.overflow` event instead of silently truncating instructions or tool data.
+Worker error traces also include the credential-redacted exception message.

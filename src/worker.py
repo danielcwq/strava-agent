@@ -24,7 +24,9 @@ def process_pending() -> None:
                     failed = _execute(run)
                 except Exception as exc:
                     logger.error("run %s failed: %s", run["id"], type(exc).__name__)
-                    archive.event("run.error", {"error_type": type(exc).__name__})
+                    archive.event(
+                        "run.error", {"error_type": type(exc).__name__, "message": str(exc)}
+                    )
                     # A send attempt could already have succeeded despite a lost response.
                     # Never automatically repeat a potentially delivered reply.
                     delivery_attempted = any(

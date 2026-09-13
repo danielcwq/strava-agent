@@ -34,6 +34,59 @@ def without_thinking(messages: list[dict]) -> list[dict]:
     return replay
 
 
+def fit_tool_context(request: dict, history_messages: int) -> tuple[dict, int]:
+    """Make room for tool results by dropping whole historical exchanges.
+
+    The current user instruction and its entire tool chain are protected. Raw
+    history stays archived and searchable; only this request's replay is reduced.
+    """
+    before = token_estimate(request)
+    if before <= settings.context_token_budget:
+        return request, history_messages
+    messages = request["messages"]
+    historical = messages[:history_messages]
+    active = messages[history_messages:]
+    dropped = 0
+    while True:
+        # Compaction changes the prefix bound into reasoning signatures.
+        replay_history = without_thinking(historical)
+        candidate = {**request, "messages": replay_history + without_thinking(active)}
+        after = token_estimate(candidate)
+        if after <= settings.context_token_budget:
+            archive.event(
+                "context.compacted",
+                {
+                    "reason": "make room for tool results",
+                    "estimated_before": before,
+                    "estimated_after": after,
+                    "budget": settings.context_token_budget,
+                    "historical_messages_removed": dropped,
+                },
+            )
+            return candidate, len(replay_history)
+        if not historical:
+            archive.event(
+                "context.overflow",
+                {
+                    "estimated_input_tokens": after,
+                    "budget": settings.context_token_budget,
+                    "historical_messages_removed": dropped,
+                },
+            )
+            raise ValueError("current instruction and tool results exceed context budget")
+        # A plain-text user message starts a new exchange. Tool results use blocks.
+        boundary = next(
+            (
+                i
+                for i, message in enumerate(historical[1:], 1)
+                if message["role"] == "user" and isinstance(message["content"], str)
+            ),
+            len(historical),
+        )
+        dropped += boundary
+        historical = historical[boundary:]
+
+
 def _plain(content) -> str:
     if isinstance(content, str):
         return content
@@ -142,12 +195,7 @@ def build(
     for batch in batches:
         batch_sources = [old_run["id"] for old_run, _ in batch]
         excerpts = "\n\n".join(excerpt for _, excerpt in batch)
-        material = (
-            "Previous summary (fallible notes):\n"
-            + summary
-            + "\n\n"
-            + excerpts
-        )
+        material = "Previous summary (fallible notes):\n" + summary + "\n\n" + excerpts
         try:
             candidate = summarize(material).strip()
             if not candidate or token_estimate(candidate) > settings.context_summary_tokens:
