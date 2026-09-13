@@ -24,7 +24,7 @@ Google Health uses **OAuth 2.0** for read-only Fitbit Air data. The brief treats
 ## Stack
 
 - Python 3.12, FastAPI
-- SQLite (OAuth tokens, ping dedup) on a Fly volume
+- SQLite (OAuth, durable queue, traces, conversation context, coaching profile) on a Fly volume
 - Anthropic Claude (synthesis)
 - Fly.io (always-on host)
 - Telegram Bot API (delivery)
@@ -42,7 +42,24 @@ training principles, and coaching context there. The local file is excluded from
 Git and Docker build contexts. For Fly, provide the same content through the
 `TRAINING_PROFILE_TOML_B64` secret.
 
+The profile seeds SQLite **once**. Afterwards, ask the Telegram bot to save
+schedule changes, race dates/goals, and coaching instructions. `/context` shows
+the active saved revision; `/reset` starts fresh conversation context while
+preserving the profile and archived history. Existing deployment secrets do not
+overwrite saved bot edits on redeploy.
+
 The general coach prompt remains in [`prompts/system.md`](./prompts/system.md).
+
+## Context and traces
+
+Chat now retains complete exchanges, retrieves older conversations, and summarizes
+older context within a configurable request budget. All model/tool steps, commands,
+and Telegram delivery attempts are archived. View private HTML/JSON traces and
+create verified backups with `scripts/state_archive.py`.
+
+See [context, tracing, migration and backup operations](docs/context-revamp.md) and
+the [staged TODO](TODO.md). Run one app process on one Fly Machine with its volume.
+Models and external agent harnesses are unchanged in stages 1–3.
 
 ## Security and privacy
 

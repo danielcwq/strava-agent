@@ -1,6 +1,8 @@
 """Environment-loaded configuration. Validates required vars at import time."""
+
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -54,6 +56,11 @@ class Settings(BaseSettings):
 
     timezone: str = "America/Los_Angeles"
     log_level: str = "INFO"
+
+    # Conservative serialized-byte token estimates keep context bounded without
+    # another network request. Archives are never truncated to this allowance.
+    context_token_budget: int = Field(default=48_000, ge=8000)
+    context_summary_tokens: int = Field(default=3_000, ge=512)
 
     # Daily token-spend ceilings for the Telegram chat agent — a runaway-bug
     # backstop, not a hard budget. 0 = unlimited. Defaults sit far above any real

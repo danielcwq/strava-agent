@@ -1,9 +1,10 @@
 """Anthropic Claude client. Loads the public prompt and private profile context."""
+
 import json
 
 from anthropic import Anthropic
 
-from src import training_config
+from src import model_calls, training_config
 from src.config import PROMPTS_DIR, settings
 
 MODEL = "claude-sonnet-4-6"
@@ -34,8 +35,7 @@ _BRIEF_TOOL = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Short tags for anomalies, e.g. 'HRV -1.5σ', 'sleep deficit'. "
-                    "May be empty."
+                    "Short tags for anomalies, e.g. 'HRV -1.5σ', 'sleep deficit'. May be empty."
                 ),
             },
         },
@@ -45,21 +45,13 @@ _BRIEF_TOOL = {
 
 
 def load_system_prompt(include_project_context: bool = False) -> str:
-    """Assemble the base prompt and private training profile.
-
-    Training principles are always included. Project context is included only
-    when requested; the morning brief does that on Mondays so race goals are not
-    repeated every day.
-    """
-    parts = [(PROMPTS_DIR / "system.md").read_text()]
-    principles = training_config.training_principles()
-    if principles:
-        parts.append(principles)
-    if include_project_context:
-        ctx = training_config.project_context()
-        if ctx:
-            parts.append(ctx)
-    return "\n\n---\n\n".join(parts)
+    """Every brief sees the current profile; inclusion is independent of weekday."""
+    return "\n\n---\n\n".join(
+        [
+            (PROMPTS_DIR / "system.md").read_text(),
+            training_config.profile_context(),
+        ]
+    )
 
 
 def synthesize(
@@ -72,14 +64,15 @@ def synthesize(
     Returns parsed args: {"headline": str, "body": str, "flags": list[str]}.
     Raises RuntimeError if the model fails to call the tool.
 
-    include_project_context: when True, the private project context is appended
-    to the system prompt. The caller sets this only on Mondays.
+    include_project_context is retained for compatibility; current profile is always included.
     """
     user_message = (
         "Here is today's training data. Call deliver_morning_brief with the brief.\n\n"
         f"{json.dumps(user_context, indent=2, default=str)}"
     )
-    response = _client.messages.create(
+    response = model_calls.create(
+        _client,
+        purpose="brief",
         model=model,
         max_tokens=MAX_TOKENS,
         system=load_system_prompt(include_project_context=include_project_context),

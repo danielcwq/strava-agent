@@ -28,6 +28,10 @@ build/
 *.sqlite
 *.sqlite3
 *.db-journal
+*.db-wal
+*.db-shm
+/private-artifacts/
+/data/
 
 # Personal training context
 config/training_profile.local.toml

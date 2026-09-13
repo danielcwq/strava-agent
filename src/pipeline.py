@@ -1,9 +1,10 @@
 """Morning brief orchestrator: gather data, synthesize, deliver, record."""
+
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from src import db
+from src import archive, db
 from src.clients import telegram
 from src.config import settings
 from src.synthesis import synthesize_brief
@@ -31,14 +32,19 @@ def morning_brief(sleep_summary: dict | None = None) -> dict:
     After successful delivery, the brief is persisted via db.record_brief_content
     so /last can show it.
     """
+    with archive.execution("brief.manual", {"sleep_summary": sleep_summary}):
+        return _deliver_brief(sleep_summary)
+
+
+def _deliver_brief(sleep_summary: dict | None) -> dict:
     logger.info("morning_brief.start has_sleep=%s", sleep_summary is not None)
     brief = synthesize_brief(sleep_summary=sleep_summary)
+    archive.event("brief.generated", brief)
     telegram.send_message(format_for_telegram(brief))
 
-    calendar_date = (
-        (sleep_summary or {}).get("calendarDate")
-        or datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
-    )
+    calendar_date = (sleep_summary or {}).get("calendarDate") or datetime.now(
+        ZoneInfo(settings.timezone)
+    ).date().isoformat()
     try:
         db.record_brief_content(calendar_date, brief)
     except Exception:
