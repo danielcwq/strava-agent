@@ -213,3 +213,13 @@ Historical exchanges are compacted in batches of at most 24,000 estimated materi
 tokens (lower when the configured context budget requires it), with source IDs and
 a durable checkpoint per batch. The initial import therefore needs a few summary
 requests instead of one per old exchange. Completed batches survive a restart.
+
+
+## Reading saved preferences in Telegram
+
+`/context` shows a compact, formatted overview of the training phase, weekly
+schedule, and race goal. `/context instructions`, `/context background`, and
+`/context race` show the complete corresponding saved sections. Long sections
+include a next-page command (for example `/context instructions 2`). Text is
+escaped and each page is rendered as a complete Telegram HTML message. These
+views do not alter the saved profile or the context supplied to the model.
