@@ -594,7 +594,8 @@ def test_partial_response_is_archived_but_not_replayed_as_complete(monkeypatch):
     assert any(e["kind"] == "chat.incomplete" for e in archive.events(run_id))
     assert "unfinished" not in json.dumps(context_builder.exchange(run))
     original = context_builder.read_exchange("123", run["session_id"], run_id)
-    assert "unfinished" in json.dumps(original)
+    assert "unfinished" not in json.dumps(original)
+    assert "unfinished" in json.dumps(archive.events(run_id))
 
 
 def test_signed_blocks_preserved_in_complete_context(monkeypatch):

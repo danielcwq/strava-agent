@@ -312,11 +312,15 @@ def read_exchange(
         run["session_id"] != session_id and not include_previous_sessions
     ):
         raise ValueError("run is outside the requested chat/session")
+    records = [e["payload"] for e in archive.events(run_id) if e["kind"] == "conversation.message"]
+    messages = [m for m in records if m["role"] == "user" and isinstance(m["content"], str)]
+    last_reply = next((m for m in reversed(records) if m["role"] == "assistant"), None)
+    if run["status"] == "completed" and last_reply and _plain(last_reply["content"]):
+        messages.append({"role": "assistant", "content": _plain(last_reply["content"])})
     return {
         "run_id": run_id,
         "status": run["status"],
         "legacy_incomplete": bool(run["legacy_incomplete"]),
-        "messages": [
-            e["payload"] for e in archive.events(run_id) if e["kind"] == "conversation.message"
-        ],
+        "messages": messages,
+        "view": "User messages and final reply text. Raw model/tool events remain in the trace.",
     }

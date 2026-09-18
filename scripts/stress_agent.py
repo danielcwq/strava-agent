@@ -140,6 +140,9 @@ def main():
                 reply = conversation.handle_message(owner, text)
             after = training_config.get_profile()
             assert reply.strip()
+            assert any(e["kind"] == "chat.finished" for e in archive.events(run_id)), (
+                "request did not produce a completed model answer (refused or limited)"
+            )
             if kind == "read":
                 assert after == before, "read-only request mutated the profile"
             elif kind == "coaching":

@@ -274,3 +274,19 @@ reruns. An exact replay of a previously failed nine-tool request completed with 
 below the unchanged 48,000-token allowance. No production preferences were edited
 by these isolated tests. These checks exercise runtime reliability and data coverage;
 race forecasts remain uncertain coaching interpretations rather than guarantees.
+
+### Conversation recall and declined responses
+
+History search indexes plain user messages and final assistant reply text from
+completed runs. It excludes active searches, nested tool data, intermediate notes,
+and reasoning/signature blocks. `read_conversation` returns the complete user/final
+reply pair with run status; raw technical events remain available in private trace
+exports. Short search excerpts link to those full replies. Explicit recall such
+as “you said” authorizes earlier-session lookup; the default remains session-scoped.
+
+A provider `refusal` is terminal: the bot records `chat.refused` and sends a clear
+notice with a trace ID, preserving any prior successful-save acknowledgement.
+Partial output and tool calls in that response are never executed or replayed, and
+the request is not automatically retried. The queue records the handled notice as
+completed, while `chat.finished` remains absent. The stress runner requires that
+event so a refusal notice cannot count as a successful answer.

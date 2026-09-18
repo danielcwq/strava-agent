@@ -77,7 +77,9 @@ TOOLS: list[dict] = profile_tools.TOOLS + [
     },
     {
         "name": "search_conversation_history",
-        "description": "Find original chat messages by keywords or UTC date range. "
+        "description": "Find user messages and final reply text by keywords or UTC date range. "
+        "Use 1-3 distinctive keywords; every keyword must match. "
+        "Short excerpts link to full replies. "
         "By default search "
         "only this session. Search previous sessions only when the user explicitly "
         "asks about past conversations. Results include run IDs for read_conversation.",
@@ -94,7 +96,8 @@ TOOLS: list[dict] = profile_tools.TOOLS + [
     },
     {
         "name": "read_conversation",
-        "description": "Read a complete archived exchange by run ID.",
+        "description": "Read the full user message and final reply text by run ID. "
+        "Internal model/tool records are excluded from this conversation view.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -405,7 +408,10 @@ def _history_scope(args):
         re.I,
     )
     exact_run = args.get("run_id") and args["run_id"] in text
-    if previous and not (exact_run or references_past and references_dialogue):
+    recalls_dialogue = re.search(
+        r"\b(you|u|we)\s+(said|told|discussed|agreed|decided|mentioned)\b", text, re.I
+    )
+    if previous and not (exact_run or recalls_dialogue or references_past and references_dialogue):
         raise ValueError("previous sessions require an explicit request about past conversations")
     return run, previous
 
@@ -419,9 +425,23 @@ def _search_history(args):
         include_previous_sessions=previous,
         since=args.get("since"),
         until=args.get("until"),
+        limit=5,
     )
     # Keep search results small; read_conversation can fetch the source exchange.
-    return {"matches": [{**r, "payload": str(r["payload"])[:1800]} for r in results]}
+    matches = []
+    for result in results:
+        text = result["payload"]["content"]
+        word = next(iter(args["query"].split()), "")
+        start = max(0, text.lower().find(word.lower()) - 150) if word else 0
+        excerpt = text[start : start + 600]
+        matches.append(
+            {
+                **result,
+                "payload": {"role": result["payload"]["role"], "content": excerpt},
+                "excerpt": start > 0 or len(excerpt) < len(text),
+            }
+        )
+    return {"matches": matches}
 
 
 def _read_history(args):
@@ -600,6 +620,22 @@ def handle_message(chat_id: str, user_text: str) -> str:
 
         # Convert SDK content blocks to plain dicts for storage / serialization
         content_dicts = [_block_to_dict(b) for b in response.content]
+        if response.stop_reason == "refusal":
+            # A refused stream can contain unfinished text/tool blocks. Keep it
+            # in model.response, but do not execute, replay, or retry it.
+            archive.event("chat.refused", {"stop_reason": "refusal"})
+            final_text = "The model declined this request without completing an answer."
+            changes = [
+                e["payload"] for e in archive.events(run_id) if e["kind"] == "profile.updated"
+            ]
+            if changes:
+                final_text += (
+                    f" Profile revision {changes[-1]['revision']} was saved; "
+                    "use /context to review it."
+                )
+            final_text += f" The trace is saved: {run_id}."
+            archive.event("conversation.message", {"role": "assistant", "content": final_text})
+            return final_text
         assistant_message = {"role": "assistant", "content": content_dicts}
         messages.append(assistant_message)
         archive.event("conversation.message", assistant_message)
