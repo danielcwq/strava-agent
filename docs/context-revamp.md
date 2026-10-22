@@ -63,8 +63,13 @@ Each chat request includes the base prompt, a current profile snapshot, recent
 complete exchanges, and (when needed) a versioned summary of older dialogue. There
 is no 24-hour cutoff. The budget uses a conservative UTF-8-byte token estimate:
 this is intentionally an upper estimate for the text-only payload, not the
-provider's exact tokenizer. Default `CONTEXT_TOKEN_BUDGET=48000` and
-`CONTEXT_SUMMARY_TOKENS=3000` can be configured through environment settings.
+provider's exact tokenizer. Context capacity is read from the configured model's
+Models API metadata and cached per model ID. The input allowance reserves the
+configured chat output allowance plus 4,096 tokens of framing headroom. Opus 5.5
+reports a 1,000,000-token window, giving 963,136 tokens with the default output
+setting. There is no fixed 48k cutoff. Leave `CONTEXT_TOKEN_BUDGET` unset for this
+automatic behavior; an explicit override remains available for controlled tests
+or deployments. `CONTEXT_SUMMARY_TOKENS=3000` bounds older-dialogue summaries.
 
 Whole exchanges are retained together so tool calls/results and signed provider
 blocks remain paired. Failed exchanges are represented in normal context by the
@@ -182,7 +187,7 @@ and a small real-world acceptance check remain a release step after PR review.
 
 ## Stage 4: model and structured briefs
 
-The default API identifier is `claude-fable-5-1`, configurable separately through
+The default API identifier is `claude-opus-5-5`, configurable separately through
 `CHAT_MODEL` and `BRIEF_MODEL`. Chat uses high effort, briefs medium, and history
 summaries low. Adaptive thinking is enabled. Changing models requires checking
 that the replacement supports this request format.
@@ -290,3 +295,18 @@ Partial output and tool calls in that response are never executed or replayed, a
 the request is not automatically retried. The queue records the handled notice as
 completed, while `chat.finished` remains absent. The stress runner requires that
 event so a refusal notice cannot count as a successful answer.
+
+
+## Opus 5.5 and model-derived context capacity
+
+Chat, conversation summaries, and morning briefs default to `claude-opus-5-5`
+through Anthropic's Messages API. API access, adaptive thinking, and the existing
+brief JSON schema were verified before deployment. Output allowances and explicit
+effort settings are unchanged. Model metadata is cached by model ID; missing
+capacity metadata raises an explicit error instead of silently reinstating a 48k
+limit. Existing small-allowance compaction tests use an explicit test override.
+
+The original 49-tool historical-search trace now replays through 14 model requests
+without archiving active result bodies or hitting the former cutoff. Its largest
+serialized request is 217,474 bytes, safely within the model-derived allowance.
+Raw events, stored profile revisions, and retrieval behavior are unchanged.

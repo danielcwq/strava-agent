@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Callable
 from copy import deepcopy
 
-from src import archive, db, tool_context
+from src import archive, db, model_limits, tool_context
 from src.config import settings
 
 
@@ -85,8 +85,9 @@ def fit_tool_context(
     read-result bodies may become retrievable archive references. Raw history and
     results stay archived; only this request's replay is reduced.
     """
+    budget = model_limits.input_budget()
     before = measure(request)
-    if before <= settings.context_token_budget:
+    if before <= budget:
         return request, history_messages
     messages = request["messages"]
     historical = messages[:history_messages]
@@ -97,14 +98,14 @@ def fit_tool_context(
         replay_history = without_thinking(historical)
         candidate = {**request, "messages": replay_history + without_thinking(active)}
         after = measure(candidate)
-        if after <= settings.context_token_budget:
+        if after <= budget:
             archive.event(
                 "context.compacted",
                 {
                     "reason": "make room for tool results",
                     "estimated_before": before,
                     "estimated_after": after,
-                    "budget": settings.context_token_budget,
+                    "budget": budget,
                     "historical_messages_removed": dropped,
                 },
             )
@@ -118,7 +119,7 @@ def fit_tool_context(
                 "context.overflow",
                 {
                     "estimated_input_tokens": after,
-                    "budget": settings.context_token_budget,
+                    "budget": budget,
                     "historical_messages_removed": dropped,
                 },
             )
@@ -191,7 +192,7 @@ def build(
     run_id: str, user_text: str, system: str, tools: list, summarize: Callable[[str], str]
 ) -> tuple[list[dict], str]:
     run = archive.get_run(run_id)
-    budget = settings.context_token_budget
+    budget = model_limits.input_budget()
     current = {"role": "user", "content": user_text}
     base = token_estimate({"system": system, "tools": tools, "messages": [current]})
     if base + settings.context_summary_tokens >= budget:
