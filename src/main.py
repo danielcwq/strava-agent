@@ -1,14 +1,15 @@
 """FastAPI receiver for Garmin Health API Push notifications.
 
 Endpoints:
-    GET  /health        — liveness check for Fly
+    GET  /health        — state-storage readiness check for Fly
     POST /garmin/push/{secret}
                         — authenticated Garmin push; triggers a brief on sleeps
 
 Garmin sends push payloads keyed by summary type (sleeps, dailies, userMetrics,
 hrv, stressDetails, etc.). We:
   - Store every summary type in SQLite so later briefs can read recent values.
-  - Trigger the morning brief only on `sleeps` (one trigger per calendarDate).
+  - Trigger the morning brief only on today's `sleeps`, once per local day.
+  - Keep replayed historical records without generating historical-day briefs.
 
 The handler must ack 200 within 30s; brief generation runs in a background task.
 """
@@ -19,7 +20,8 @@ import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -118,17 +120,28 @@ async def garmin_push(
             )
             stored += 1
 
-            if summary_type == "sleeps" and _should_trigger_brief(entry):
-                _, created = archive.enqueue(
-                    str(settings.telegram_chat_id),
-                    "brief",
-                    entry,
-                    source_key="garmin-sleep:" + calendar_date,
-                    brief_date=calendar_date,
-                )
-                if created:
-                    background_tasks.add_task(worker.process_pending)
-                    brief_dispatched += 1
+    # Garmin can replay several days in one batch after an outage. Store the
+    # complete batch first, then dispatch only today's latest sleep record.
+    today = _today_local()
+    current_sleep = next(
+        (
+            entry
+            for entry in reversed(validated.get("sleeps", []))
+            if entry["calendarDate"] == today
+        ),
+        None,
+    )
+    if current_sleep and _should_trigger_brief(current_sleep):
+        _, created = archive.enqueue(
+            str(settings.telegram_chat_id),
+            "brief",
+            current_sleep,
+            source_key="garmin-sleep:" + today,
+            brief_date=today,
+        )
+        if created:
+            background_tasks.add_task(worker.process_pending)
+            brief_dispatched += 1
 
     return {
         "received": received,
@@ -176,6 +189,10 @@ def _validate_garmin_payload(payload: object) -> dict[str, list[dict]]:
             valid_entries.append(entry)
         validated[summary_type] = valid_entries
     return validated
+
+
+def _today_local() -> str:
+    return datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
 
 
 def _should_trigger_brief(entry: dict) -> bool:

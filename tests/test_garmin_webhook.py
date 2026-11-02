@@ -22,6 +22,7 @@ def _configure_webhook(monkeypatch):
     dispatched: list[dict] = []
 
     monkeypatch.setattr(main.settings, "garmin_webhook_secret", _SECRET)
+    monkeypatch.setattr(main, "_today_local", lambda: "2026-07-25")
     monkeypatch.setattr(main.db, "get_tokens", lambda: {"user_id": _USER_ID})
     monkeypatch.setattr(main.db, "is_brief_sent", lambda _date: False)
     monkeypatch.setattr(
@@ -36,6 +37,7 @@ def _configure_webhook(monkeypatch):
         "mark_brief_sent",
         lambda calendar_date, summary_id: marked.append((calendar_date, summary_id)),
     )
+
     def enqueue(chat_id, kind, payload, source_key=None, brief_date=None):
         marked.append((brief_date, payload.get("summaryId", "")))
         dispatched.append(payload)
@@ -124,3 +126,68 @@ def test_webhook_is_disabled_without_configured_secret(monkeypatch) -> None:
     )
 
     assert response.status_code == 503
+
+
+def test_replayed_sleep_batch_uses_today_after_all_records_are_stored(monkeypatch):
+    for reverse_order in (False, True):
+        stored, marked, dispatched = _configure_webhook(monkeypatch)
+        yesterday = _sleep_entry(calendarDate="2026-07-24", summaryId="old")
+        today = _sleep_entry(summaryId="current")
+        entries = [yesterday, today] if not reverse_order else [today, yesterday]
+        original = main.archive.enqueue
+
+        def enqueue(*args, stored=stored, original=original, **kwargs):
+            assert len(stored) == 3  # both sleep records and the readiness metrics
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(main.archive, "enqueue", enqueue)
+        response = TestClient(main.app).post(
+            f"/garmin/push/{_SECRET}",
+            json={"sleeps": entries, "hrv": [_sleep_entry(summaryId="hrv")]},
+        )
+        assert response.status_code == 200
+        assert response.json()["stored"] == 3
+        assert response.json()["brief_dispatched"] == 1
+        assert dispatched == [today]
+        assert marked == [("2026-07-25", "current")]
+
+
+def test_historical_only_batch_is_saved_without_sending_stale_briefs(monkeypatch):
+    stored, marked, dispatched = _configure_webhook(monkeypatch)
+    response = TestClient(main.app).post(
+        f"/garmin/push/{_SECRET}",
+        json={
+            "sleeps": [
+                _sleep_entry(calendarDate="2026-07-23"),
+                _sleep_entry(calendarDate="2026-07-24"),
+            ]
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["stored"] == 2
+    assert response.json()["brief_dispatched"] == 0
+    assert len(stored) == 2 and not marked and not dispatched
+
+
+def test_same_day_correction_uses_last_stored_record(monkeypatch):
+    stored, _, dispatched = _configure_webhook(monkeypatch)
+    old = _sleep_entry(summaryId="preliminary")
+    corrected = _sleep_entry(summaryId="corrected")
+    response = TestClient(main.app).post(
+        f"/garmin/push/{_SECRET}", json={"sleeps": [old, corrected]}
+    )
+    assert response.status_code == 200
+    assert stored[-1][2] == corrected
+    assert dispatched == [corrected]
+
+
+def test_current_day_dedup_survives_replayed_batches(monkeypatch):
+    stored, marked, dispatched = _configure_webhook(monkeypatch)
+    monkeypatch.setattr(main.db, "is_brief_sent", lambda day: day == "2026-07-25")
+    response = TestClient(main.app).post(
+        f"/garmin/push/{_SECRET}",
+        json={"sleeps": [_sleep_entry(calendarDate="2026-07-24"), _sleep_entry()]},
+    )
+    assert response.status_code == 200 and len(stored) == 2
+    assert response.json()["brief_dispatched"] == 0
+    assert not marked and not dispatched
