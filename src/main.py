@@ -22,8 +22,9 @@ from contextlib import asynccontextmanager
 from datetime import date
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 
-from src import archive, db, worker
+from src import archive, db, maintenance, worker
 from src.config import settings
 
 logging.basicConfig(
@@ -56,6 +57,15 @@ _SUMMARY_TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 @app.get("/health")
 def health() -> dict:
+    if not maintenance.ready():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "revision": settings.app_revision,
+                "reason": "state storage unavailable",
+            },
+        )
     return {"ok": True, "revision": settings.app_revision}
 
 

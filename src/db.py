@@ -1,10 +1,12 @@
 """SQLite state: Garmin OAuth tokens, morning-brief dedup, and Garmin summary store."""
 
 import json
+import os
 import sqlite3
+import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from src.config import settings
@@ -323,15 +325,20 @@ def backup_database(destination: Path) -> None:
     if destination == (settings.data_dir / "state.db").resolve() or destination.exists():
         raise ValueError("backup destination must be a new file")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.touch(mode=0o600, exist_ok=False)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=destination.name + ".", suffix=".partial", dir=destination.parent
+    )
+    os.close(fd)
+    temporary = Path(temporary_name)
     try:
-        with get_conn() as source, sqlite3.connect(destination) as target:
+        with get_conn() as source, closing(sqlite3.connect(temporary)) as target:
             source.backup(target)
             if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError("backup integrity check failed")
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
+        # Atomic publication that cannot replace another writer's valid snapshot.
+        os.link(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def record_api_usage(day: str, input_tokens: int, output_tokens: int) -> None:

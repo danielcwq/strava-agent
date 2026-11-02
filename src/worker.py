@@ -6,7 +6,7 @@ import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from src import archive, db
+from src import archive, maintenance
 from src.clients import telegram
 from src.config import settings
 
@@ -97,10 +97,8 @@ def serve(stop: threading.Event) -> None:
         try:
             today = datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
             if today != backed_up_day:
-                destination = settings.data_dir / "backups" / f"state-{today}.db"
                 try:
-                    if not destination.exists():
-                        db.backup_database(destination)
+                    maintenance.daily_backup(today)
                 except Exception:
                     logger.exception("daily backup failed; queue processing will continue")
                 backed_up_day = today
