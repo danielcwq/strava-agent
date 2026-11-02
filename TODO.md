@@ -30,6 +30,11 @@ Delivered in [PR #4](https://github.com/danielcwq/strava-agent/pull/4).
 Validation: 54 automated tests, Ruff, and diff whitespace checks pass.
 Deployment and live acceptance results are recorded in PR #4.
 
+Follow-up reliability work: 84 automated tests, an exact replay of the failed
+multi-tool analysis, seven live-model scenarios against a private database copy,
+and two focused analysis reruns. Context accounting now uses observed provider
+usage, with retrievable bounded views for large tool results. Stage 5 remains deferred.
+
 ## Stage 4 — Fable 5.1
 - [x] Verify model access and configure chat, summaries, and briefs.
 - [x] Native structured briefs with configurable output allowances.

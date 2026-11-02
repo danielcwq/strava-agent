@@ -318,12 +318,22 @@ def search_history(
     from datetime import date
 
     params: list = [chat_id]
-    filters = ["r.chat_id=?", "e.kind='conversation.message'"]
+    filters = [
+        "r.chat_id=?",
+        "r.status='completed'",
+        "e.kind='conversation.message'",
+        "(json_extract(e.payload,'$.role')='user' AND "
+        "json_type(e.payload,'$.content')='text' OR "
+        "json_extract(e.payload,'$.role')='assistant' AND e.id=("
+        "SELECT max(last.id) FROM run_events last WHERE last.run_id=e.run_id "
+        "AND last.kind='conversation.message' "
+        "AND json_extract(last.payload,'$.role')='assistant'))",
+    ]
     if not include_previous_sessions:
         filters.append("r.session_id=?")
         params.append(session_id)
     for word in query.split()[:12]:
-        filters.append("instr(lower(e.payload),lower(?))>0")
+        filters.append("instr(lower(visible_text),lower(?))>0")
         params.append(word)
     for value, op in ((since, ">="), (until, "<=")):
         if value:
@@ -332,10 +342,27 @@ def search_history(
             params.append(value)
     with db.get_conn() as conn:
         rows = conn.execute(
-            "SELECT e.id,e.run_id,r.session_id,r.created_at,e.payload FROM run_events e "
+            "SELECT e.id,e.run_id,r.session_id,r.created_at,"
+            "json_extract(e.payload,'$.role') role, "
+            "CASE WHEN json_type(e.payload,'$.content')='text' "
+            "THEN json_extract(e.payload,'$.content') ELSE "
+            "(SELECT group_concat(json_extract(b.value,'$.text'),char(10)) "
+            "FROM json_each(e.payload,'$.content') b "
+            "WHERE json_extract(b.value,'$.type')='text') END visible_text "
+            "FROM run_events e "
             "JOIN agent_runs r ON r.id=e.run_id WHERE "
             + " AND ".join(filters)
             + " ORDER BY e.id DESC LIMIT ?",
             (*params, max(1, min(limit, 30))),
         ).fetchall()
-    return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
+    return [
+        {
+            "id": r["id"],
+            "run_id": r["run_id"],
+            "session_id": r["session_id"],
+            "created_at": r["created_at"],
+            "payload": {"role": r["role"], "content": r["visible_text"]},
+        }
+        for r in rows
+        if r["visible_text"]
+    ]

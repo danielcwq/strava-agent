@@ -66,8 +66,9 @@ class Settings(BaseSettings):
     timezone: str = "America/Los_Angeles"
     log_level: str = "INFO"
 
-    # Conservative serialized-byte token estimates keep context bounded without
-    # another network request. Archives are never truncated to this allowance.
+    # Initial history selection uses a conservative byte bound. Active tool loops
+    # anchor estimates to measured provider input usage plus changed-message bytes.
+    # Archives are never truncated to this allowance.
     context_token_budget: int = Field(default=48_000, ge=8000)
     context_summary_tokens: int = Field(default=3_000, ge=512)
 
