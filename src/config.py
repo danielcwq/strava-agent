@@ -65,6 +65,9 @@ class Settings(BaseSettings):
 
     timezone: str = "America/Los_Angeles"
     log_level: str = "INFO"
+    backup_keep_count: int = Field(default=7, ge=1, le=365)
+    backup_max_mb: int = Field(default=256, ge=1)
+    storage_min_free_mb: int = Field(default=64, ge=1)
 
     # Initial history selection uses a conservative byte bound. Active tool loops
     # anchor estimates to measured provider input usage plus changed-message bytes.

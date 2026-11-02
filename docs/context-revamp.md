@@ -310,3 +310,25 @@ The original 49-tool historical-search trace now replays through 14 model reques
 without archiving active result bodies or hitting the former cutoff. Its largest
 serialized request is 217,474 bytes, safely within the model-derived allowance.
 Raw events, stored profile revisions, and retrieval behavior are unchanged.
+
+
+### Storage and daily snapshot retention
+
+Daily snapshots in `/data/backups/state-YYYY-MM-DD.db` are bounded by
+`BACKUP_KEEP_COUNT` (7) and `BACKUP_MAX_MB` (256 MiB). Oldest daily copies are
+pruned before allocating a new copy, preserving the newest existing snapshot
+until a new integrity-checked one is published. At least one copy is retained,
+even if that single copy exceeds the byte allowance. Manual snapshots and the
+live database are outside this pruning rule. Raw messages, traces, Garmin records,
+and saved profiles are never removed by snapshot retention.
+
+`STORAGE_MIN_FREE_MB` (64 MiB) reserves capacity for live writes. A backup is
+skipped when it cannot fit while preserving that reserve; queue processing
+continues. Snapshots are written to a temporary file and atomically published
+after SQLite integrity verification, so an interrupted copy is not mistaken for
+a successful daily snapshot. Keep independent off-volume backups for disaster
+recovery; copies on the same volume are not protection against losing the volume.
+`/health` returns 503 if free space falls below the reserve or an SQLite write
+probe fails. The probe rolls back without persisting data. This replaces the old
+process-only check, which stayed green during a full-volume outage. Fly health
+checks can detect this condition; no new notification service is configured.
