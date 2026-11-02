@@ -28,6 +28,7 @@ from src import (
     context_builder,
     db,
     model_calls,
+    model_limits,
     profile_tools,
     tool_context,
     training_config,
@@ -607,7 +608,7 @@ def handle_message(chat_id: str, user_text: str) -> str:
                 {
                     "estimated_input_tokens": budget.estimate(request),
                     "serialized_byte_bound": context_builder.token_estimate(request),
-                    "budget": settings.context_token_budget,
+                    "budget": model_limits.input_budget(),
                     "previous_measured_input_tokens": budget.input_tokens,
                 },
             )

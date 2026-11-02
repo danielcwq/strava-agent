@@ -41,7 +41,7 @@ def test_native_brief_contract_and_configurable_allowance(monkeypatch):
     monkeypatch.setattr(settings, "brief_max_tokens", 24576)
     monkeypatch.setattr(claude._client.messages, "stream", stream)
     assert claude.synthesize({"synthetic": True}) == brief
-    assert seen["model"] == "claude-fable-5-1"
+    assert seen["model"] == "claude-opus-5-5"
     assert seen["max_tokens"] == 24576
     assert "tool_choice" not in seen and "tools" not in seen
     schema = seen["output_config"]["format"]["schema"]

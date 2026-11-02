@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     telegram_webhook_secret: str | None = None
 
     anthropic_api_key: str
-    chat_model: str = "claude-fable-5-1"
-    brief_model: str = "claude-fable-5-1"
+    chat_model: str = "claude-opus-5-5"
+    brief_model: str = "claude-opus-5-5"
     chat_max_tokens: int = Field(default=32768, ge=1024, le=128000)
     brief_max_tokens: int = Field(default=16384, ge=1024, le=128000)
     summary_max_tokens: int = Field(default=8192, ge=1024, le=128000)
@@ -68,8 +68,9 @@ class Settings(BaseSettings):
 
     # Initial history selection uses a conservative byte bound. Active tool loops
     # anchor estimates to measured provider input usage plus changed-message bytes.
-    # Archives are never truncated to this allowance.
-    context_token_budget: int = Field(default=48_000, ge=8000)
+    # Default capacity comes from the provider's model metadata, with output
+    # headroom. An explicit override is optional; archives remain complete.
+    context_token_budget: int | None = Field(default=None, ge=8000)
     context_summary_tokens: int = Field(default=3_000, ge=512)
 
     # Daily token-spend ceilings for the Telegram chat agent — a runaway-bug
