@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from src.config import settings
@@ -331,7 +331,7 @@ def backup_database(destination: Path) -> None:
     os.close(fd)
     temporary = Path(temporary_name)
     try:
-        with get_conn() as source, sqlite3.connect(temporary) as target:
+        with get_conn() as source, closing(sqlite3.connect(temporary)) as target:
             source.backup(target)
             if target.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError("backup integrity check failed")

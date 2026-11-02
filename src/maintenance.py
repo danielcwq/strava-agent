@@ -4,6 +4,7 @@ import logging
 import re
 import shutil
 import sqlite3
+from contextlib import closing
 from datetime import date
 
 from src import db
@@ -78,7 +79,7 @@ def ready() -> bool:
             return False
         # Exercise a real SQLite write without keeping probe data or schema changes.
         uri = (settings.data_dir / "state.db").resolve().as_uri() + "?mode=rw"
-        with sqlite3.connect(uri, uri=True, timeout=1) as conn:
+        with closing(sqlite3.connect(uri, uri=True, timeout=1)) as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "INSERT OR REPLACE INTO archive_metadata VALUES (?,?)", ("_health_probe", "ok")
