@@ -6,7 +6,7 @@ import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from src import archive, maintenance
+from src import archive, db, maintenance
 from src.clients import telegram
 from src.config import settings
 
@@ -61,6 +61,10 @@ def process_pending() -> None:
         _consumer.release()
 
 
+def _today_local() -> str:
+    return datetime.now(ZoneInfo(settings.timezone)).date().isoformat()
+
+
 def _execute(run: dict) -> bool:
     from src.conversation import handle_message
     from src.pipeline import morning_brief
@@ -68,6 +72,20 @@ def _execute(run: dict) -> bool:
 
     payload = json.loads(run["input_json"])
     if run["kind"] == "brief":
+        if (run.get("source_key") or "").startswith("garmin-sleep:"):
+            today = _today_local()
+            if payload.get("calendarDate") != today:
+                archive.event(
+                    "brief.skipped",
+                    {
+                        "reason": "historical Garmin sleep",
+                        "sleep_date": payload.get("calendarDate"),
+                        "today": today,
+                    },
+                )
+                return False
+            payload = db.get_garmin_summary("sleeps", today) or payload
+            archive.event("brief.sleep_selected", {"calendarDate": payload["calendarDate"]})
         morning_brief(sleep_summary=payload)
         return False
     if run["kind"] == "command":

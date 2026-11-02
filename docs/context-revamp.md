@@ -332,3 +332,16 @@ recovery; copies on the same volume are not protection against losing the volume
 probe fails. The probe rolls back without persisting data. This replaces the old
 process-only check, which stayed green during a full-volume outage. Fly health
 checks can detect this condition; no new notification service is configured.
+
+
+### Garmin replay freshness
+
+A push batch can contain several sleep dates after an outage. The handler stores
+the entire validated batch before choosing the current local day's final sleep
+record for a brief. Historical records remain available, but do not generate new
+briefs about today. Current-day delivery deduplication still applies.
+
+The worker rechecks the day before synthesizing a Garmin-triggered brief and logs
+`brief.skipped` for a record that became historical while queued. For a current-day
+run, it rereads that day's latest saved sleep correction. Manual recovery briefs
+remain available without sleep; `/refresh` uses the latest stored sleep record.

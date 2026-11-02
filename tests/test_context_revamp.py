@@ -563,6 +563,7 @@ def test_chat_edit_uses_new_revision_in_same_loop_and_next_brief(monkeypatch):
             ],
         ),
     )
+    monkeypatch.setattr(worker, "_today_local", lambda: "2026-10-01")
     brief_id, created = archive.enqueue(
         "123", "brief", {"calendarDate": "2026-10-01"}, "garmin-sleep:2026-10-01", "2026-10-01"
     )
