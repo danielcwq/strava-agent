@@ -1,4 +1,4 @@
-"""/usage — today's and this week's Telegram-chat API token spend."""
+"""Telegram chat token usage."""
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -19,26 +19,33 @@ def handle(ctx: CommandContext) -> CommandResult:
     today = datetime.now(tz).date()
     t = db.get_api_usage(today.isoformat())
     week = db.get_api_usage_since((today - timedelta(days=6)).isoformat())
+    subscription = settings.model_backend == "claude_code"
+    accounting = (
+        "Shared Claude plan limits are shown in Claude Settings → Usage."
+        if subscription
+        else "Billing and credits are shown in Anthropic Console."
+    )
+    unit = "recorded model sessions" if subscription else "model requests"
 
     lines = [
-        "*API usage* — Telegram chat only (excludes the morning brief)",
+        "*Chat token usage* (excludes the morning brief)",
         "",
         "*Today*",
         _cap_line("Input:", t["input_tok"], settings.daily_input_token_cap),
         _cap_line("Output:", t["output_tok"], settings.daily_output_token_cap),
-        f"{t['requests']} model requests",
+        f"{t['requests']} {unit}",
         "",
         f"*Last 7 days* ({week['active_days']} active)",
         f"Input {week['input_tok']:,} · Output {week['output_tok']:,}",
-        f"{week['requests']} model requests",
+        f"{week['requests']} {unit}",
         "",
-        "Includes context summaries. Billing and credits: Anthropic Console.",
+        f"Includes context summaries. {accounting}",
     ]
     return CommandResult(text="\n".join(lines), parse_mode="Markdown")
 
 
 SPEC = CommandSpec(
     name="usage",
-    help="today's and this week's chat API token spend",
+    help="today's and this week's chat token usage",
     handler=handle,
 )

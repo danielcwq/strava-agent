@@ -1,9 +1,12 @@
 """Trace the exact request and provider response for every model invocation."""
 
 from src import archive
+from src.config import settings
 
 
 def create(client, *, purpose: str, **kwargs):
+    if settings.model_backend != "api" or client is None:
+        raise RuntimeError("Direct API requests are disabled in Claude Code subscription mode")
     if archive.current_run.get() is None:
         with archive.execution("model.manual", {"purpose": purpose}):
             return create(client, purpose=purpose, **kwargs)
