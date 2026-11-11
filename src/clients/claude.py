@@ -5,10 +5,10 @@ import json
 from anthropic import Anthropic
 from pydantic import BaseModel, ConfigDict, Field
 
-from src import model_calls, training_config
+from src import claude_code, model_calls, training_config
 from src.config import PROMPTS_DIR, settings
 
-_client = Anthropic(api_key=settings.anthropic_api_key)
+_client = Anthropic(api_key=settings.anthropic_api_key) if settings.model_backend == "api" else None
 
 
 class MorningBrief(BaseModel):
@@ -39,17 +39,27 @@ def synthesize(
         "Write today's concise morning brief using the supplied training data.\n\n"
         f"{json.dumps(user_context, indent=2, default=str)}"
     )
+    model = model or settings.brief_model
+    system = load_system_prompt(include_project_context=include_project_context)
+    schema = MorningBrief.model_json_schema()
+    if settings.model_backend == "claude_code":
+        result = claude_code.run(
+            purpose="brief", model=model, effort=settings.brief_effort, system=system,
+            prompt=user_message, max_tokens=settings.brief_max_tokens, schema=schema,
+            max_turns=6,
+        )
+        return MorningBrief.model_validate(result.structured_output).model_dump()
     response = model_calls.create(
         _client,
         purpose="brief",
-        model=model or settings.brief_model,
+        model=model,
         max_tokens=settings.brief_max_tokens,
         thinking={"type": "adaptive"},
         output_config={
             "effort": settings.brief_effort,
-            "format": {"type": "json_schema", "schema": MorningBrief.model_json_schema()},
+            "format": {"type": "json_schema", "schema": schema},
         },
-        system=load_system_prompt(include_project_context=include_project_context),
+        system=system,
         messages=[{"role": "user", "content": user_message}],
     )
     if response.stop_reason != "end_turn":

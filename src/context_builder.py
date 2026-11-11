@@ -188,8 +188,16 @@ def _summary_material(run: dict, messages: list[dict]) -> str:
     return "run_id=" + run["id"] + "\n" + text
 
 
+def visible_exchange(run: dict) -> list[dict]:
+    """Seed a fresh SDK session with user messages and final replies."""
+    if run["status"] != "completed":
+        return exchange(run)
+    return read_exchange(run["chat_id"], run["session_id"], run["id"])["messages"]
+
+
 def build(
-    run_id: str, user_text: str, system: str, tools: list, summarize: Callable[[str], str]
+    run_id: str, user_text: str, system: str, tools: list, summarize: Callable[[str], str],
+    *, replay: Callable[[dict], list[dict]] = exchange,
 ) -> tuple[list[dict], str]:
     run = archive.get_run(run_id)
     budget = model_limits.input_budget()
@@ -215,7 +223,7 @@ def build(
     summary = saved["summary"] if saved else ""
     summary_id = saved["id"] if saved else None
     sources = json.loads(saved["source_run_ids"]) if saved else []
-    pending = [(dict(r), exchange(dict(r))) for r in rows if r["sequence"] > through]
+    pending = [(dict(r), replay(dict(r))) for r in rows if r["sequence"] > through]
     recent = []
     used = base + settings.context_summary_tokens + 512
     # Keep a contiguous suffix of whole exchanges. Never slice through tool pairs.

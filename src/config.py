@@ -1,9 +1,9 @@
 """Environment-loaded configuration. Validates required vars at import time."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -23,7 +23,11 @@ class Settings(BaseSettings):
     # Optional: only required if the inbound /telegram/webhook is enabled.
     telegram_webhook_secret: str | None = None
 
-    anthropic_api_key: str
+    model_backend: Literal["api", "claude_code"] = "api"
+    anthropic_api_key: str | None = None
+    claude_code_oauth_token: SecretStr | None = None
+    claude_code_use_local_login: bool = False
+    claude_code_timeout_seconds: int = Field(default=300, ge=15, le=900)
     chat_model: str = "claude-opus-5-5"
     brief_model: str = "claude-opus-5-5"
     chat_max_tokens: int = Field(default=32768, ge=1024, le=128000)
@@ -82,6 +86,17 @@ class Settings(BaseSettings):
     # env vars without a redeploy.
     daily_input_token_cap: int = 10_000_000
     daily_output_token_cap: int = 2_000_000
+
+    @model_validator(mode="after")
+    def validate_model_credentials(self) -> Self:
+        if self.model_backend == "api" and not self.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY is required for the API backend")
+        if self.model_backend == "claude_code":
+            if not self.telegram_chat_id.isdecimal() or int(self.telegram_chat_id) <= 0:
+                raise ValueError("Claude Code subscription mode requires a private owner chat")
+            if not self.claude_code_oauth_token and not self.claude_code_use_local_login:
+                raise ValueError("Claude Code subscription mode requires a setup-token")
+        return self
 
 
 settings = Settings()

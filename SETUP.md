@@ -240,6 +240,37 @@ You run this **once**, locally. The app rotates tokens in SQLite from there.
 
 ---
 
+### Use your Claude Code subscription
+
+Set `MODEL_BACKEND=claude_code` to run chat, context summaries, and morning
+briefs through the Claude Agent SDK. These sessions share the Claude plan limits
+you use for coding. The subprocess receives subscription credentials and the
+existing coaching tools. SQLite keeps the conversation history and traces.
+
+For a local test, sign in with `claude auth login` and set
+`CLAUDE_CODE_USE_LOCAL_LOGIN=true`. Production requires a headless token.
+Generate it in your own terminal with `claude setup-token`, then run
+`uv run python scripts/stage_claude_subscription.py` and paste the token at its
+hidden prompt. This stages the token and backend setting on Fly for the next
+deployment. Never commit the token.
+
+For subscription-only spending, disable Usage credits in Claude Settings → Usage.
+The account can otherwise bill for overages after its included quota runs out.
+Claude Code reports token usage in traces. Its estimated dollar costs do not
+represent your subscription bill.
+
+The Fly VM is configured with 1 GiB of memory. A Linux subscription smoke test
+covering chat, coaching tools, profile edits, summaries, and structured briefs
+peaked around 435 MiB before the web server's overhead. Monitor longer
+conversations for additional memory growth. Model sessions are serialized.
+When the subscription backend fails, the run is archived and reported through
+the existing failed-run path.
+
+Authentication and usage details are documented by
+[Claude Code](https://code.claude.com/docs/en/authentication#generate-a-long-lived-token)
+and the
+[Claude Help Center](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan).
+
 ## 7. Deploy to Fly.io
 
 1. From the repo root:

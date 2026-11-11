@@ -52,6 +52,7 @@ def _safe(value):
                 s in k.lower()
                 for s in (
                     "access_token",
+                    "oauth_token",
                     "refresh_token",
                     "api_key",
                     "authorization",
@@ -70,6 +71,7 @@ def _safe(value):
     if isinstance(value, str):
         for name in (
             "anthropic_api_key",
+            "claude_code_oauth_token",
             "telegram_bot_token",
             "telegram_webhook_secret",
             "garmin_webhook_secret",
@@ -79,6 +81,8 @@ def _safe(value):
             "google_service_account_json_b64",
         ):
             secret = getattr(settings, name, None)
+            if hasattr(secret, "get_secret_value"):
+                secret = secret.get_secret_value()
             if secret:
                 value = value.replace(secret, "[REDACTED]")
         return value
