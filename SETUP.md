@@ -259,10 +259,10 @@ The account can otherwise bill for overages after its included quota runs out.
 Claude Code reports token usage in traces. Its estimated dollar costs do not
 represent your subscription bill.
 
-The current Fly VM has 512 MB of memory. Anthropic's documented starting point
-for the SDK is 1 GiB per agent before application overhead. Benchmark a
-representative conversation and brief on Linux before activating the backend,
-and provision memory for the measured peak. Model sessions are serialized.
+The Fly VM is configured with 1 GiB of memory. A Linux subscription smoke test
+covering chat, coaching tools, profile edits, summaries, and structured briefs
+peaked around 435 MiB before the web server's overhead. Monitor longer
+conversations for additional memory growth. Model sessions are serialized.
 When the subscription backend fails, the run is archived and reported through
 the existing failed-run path.
 
